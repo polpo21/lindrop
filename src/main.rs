@@ -1,6 +1,10 @@
 //! lindrop: AirDrop between iPhone and Linux.
 
 mod archive;
+mod config;
+mod dvzip;
+mod http;
+mod ident;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
