@@ -139,8 +139,11 @@ impl<R: BufRead> Read for ChunkedReader<'_, R> {
         }
         self.left -= n as u64;
         if self.left == 0 {
-            // The CRLF after the chunk data.
-            read_line(self.inp)?;
+            // The CRLF after the chunk data; anything else means the length lied.
+            match read_line(self.inp)? {
+                Some(l) if l.is_empty() => {}
+                _ => return Err(bad("chunk data longer than its declared size")),
+            }
         }
         Ok(n)
     }
@@ -255,6 +258,14 @@ POST /Upload HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nciao\r\n2\r\n!!\
     #[test]
     fn truncated_chunk_is_an_error() {
         let raw = b"10\r\nabc";
+        let mut r = BufReader::new(&raw[..]);
+        let mut s = Vec::new();
+        assert!(ChunkedReader::new(&mut r).read_to_end(&mut s).is_err());
+    }
+
+    #[test]
+    fn chunk_longer_than_declared() {
+        let raw = b"3\r\nabcXYZ\r\n0\r\n\r\n";
         let mut r = BufReader::new(&raw[..]);
         let mut s = Vec::new();
         assert!(ChunkedReader::new(&mut r).read_to_end(&mut s).is_err());

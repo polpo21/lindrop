@@ -148,6 +148,12 @@ impl<R: Read> Reader<R> {
     }
 }
 
+/// Bounds on what a (possibly hostile) archive may write.
+pub struct Limits {
+    pub max_bytes: u64,
+    pub max_entries: usize,
+}
+
 /// What an extraction produced.
 #[derive(Debug, Default)]
 pub struct Extracted {
@@ -157,10 +163,18 @@ pub struct Extracted {
 }
 
 /// Extracts a cpio stream into `dest`, which must exist.
-pub fn extract(inp: impl Read, dest: &Path) -> Result<Extracted> {
+pub fn extract(inp: impl Read, dest: &Path, limits: &Limits) -> Result<Extracted> {
     let mut r = Reader { inp, pos: 0 };
     let mut done = Extracted::default();
+    let mut entries = 0usize;
     while let Some((e, fmt)) = r.next()? {
+        entries += 1;
+        if entries > limits.max_entries {
+            bail!("l'archivio ha più di {} voci", limits.max_entries);
+        }
+        if done.bytes + e.size > limits.max_bytes {
+            bail!("l'archivio supera la dimensione annunciata ({} byte)", limits.max_bytes);
+        }
         let Some(rel) = safe_path(&e.name) else {
             // Apple's archives open with a "." entry for the root itself.
             if e.name.trim_end_matches('/') != "." {
@@ -220,6 +234,17 @@ fn hex(b: &[u8]) -> Result<u64> {
 mod tests {
     use super::*;
 
+    const NOLIMIT: Limits = Limits { max_bytes: u64::MAX / 2, max_entries: usize::MAX };
+
+    #[test]
+    fn limits() {
+        let a = odc(&[("./a", Some(b"0123456789")), ("./b", Some(b"x"))]);
+        let dir = tempfile::tempdir().unwrap();
+        assert!(extract(&a[..], dir.path(), &Limits { max_bytes: 5, max_entries: 10 }).is_err());
+        assert!(extract(&a[..], dir.path(), &Limits { max_bytes: 100, max_entries: 1 }).is_err());
+        assert!(extract(&a[..], dir.path(), &Limits { max_bytes: 11, max_entries: 2 }).is_ok());
+    }
+
     fn odc(entries: &[(&str, Option<&[u8]>)]) -> Vec<u8> {
         let mut w = Writer::new(Vec::new());
         for (name, data) in entries {
@@ -235,7 +260,7 @@ mod tests {
     fn roundtrip_odc() {
         let a = odc(&[("./Foto", None), ("./Foto/a.jpg", Some(b"ciao")), ("./b.txt", Some(b""))]);
         let dir = tempfile::tempdir().unwrap();
-        let x = extract(&a[..], dir.path()).unwrap();
+        let x = extract(&a[..], dir.path(), &NOLIMIT).unwrap();
         assert_eq!(x.files, vec![PathBuf::from("Foto/a.jpg"), PathBuf::from("b.txt")]);
         assert_eq!(fs::read(dir.path().join("Foto/a.jpg")).unwrap(), b"ciao");
         assert_eq!(x.bytes, 4);
@@ -245,7 +270,7 @@ mod tests {
     fn refuses_escapes() {
         let a = odc(&[("../fuori", Some(b"x")), ("/etc/passwd", Some(b"x")), ("./ok", Some(b"y"))]);
         let dir = tempfile::tempdir().unwrap();
-        let x = extract(&a[..], dir.path()).unwrap();
+        let x = extract(&a[..], dir.path(), &NOLIMIT).unwrap();
         assert_eq!(x.files, vec![PathBuf::from("ok")]);
     }
 
@@ -272,7 +297,7 @@ mod tests {
         let mut a = ent("f", S_IFREG | 0o644, b"hi!");
         a.extend(ent(TRAILER, 0, b""));
         let dir = tempfile::tempdir().unwrap();
-        let x = extract(&a[..], dir.path()).unwrap();
+        let x = extract(&a[..], dir.path(), &NOLIMIT).unwrap();
         assert_eq!(fs::read(dir.path().join("f")).unwrap(), b"hi!");
         assert_eq!(x.files.len(), 1);
     }
@@ -281,6 +306,6 @@ mod tests {
     fn truncated_is_an_error() {
         let a = odc(&[("./a", Some(b"0123456789"))]);
         let dir = tempfile::tempdir().unwrap();
-        assert!(extract(&a[..80], dir.path()).is_err());
+        assert!(extract(&a[..80], dir.path(), &NOLIMIT).is_err());
     }
 }

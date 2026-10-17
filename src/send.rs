@@ -71,7 +71,7 @@ impl Sender {
         if code != 200 {
             return Ok(None);
         }
-        let v = Value::from_reader(io::Cursor::new(body)).context("/Discover: risposta non valida")?;
+        let v = crate::airdrop::parse_plist(&body).context("/Discover: risposta non valida")?;
         Ok(v.as_dictionary().and_then(|d| d.get("ReceiverComputerName")).and_then(Value::as_string).map(str::to_string))
     }
 

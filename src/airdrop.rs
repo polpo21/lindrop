@@ -10,6 +10,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -21,7 +22,18 @@ use crate::{archive, dvzip, http};
 pub const PORT: u16 = 8771;
 /// Model shown on the phone; a Mac model makes iOS draw a laptop.
 pub const MODEL: &str = "MacBookPro18,1";
-const MAX_PLIST: u64 = 4 << 20;
+/// Discover/Ask bodies are a few kB; a sender icon at most a few hundred.
+const MAX_PLIST: u64 = 512 << 10;
+/// Nesting a plist deeper than this is an attack (dropping a deep value
+/// recurses and overflows the stack), not an AirDrop request.
+const MAX_DEPTH: usize = 16;
+/// Connections served at once; more are closed straight away.
+const MAX_CONNECTIONS: usize = 8;
+/// Slack over the sizes declared in /Ask: cpio headers, AppleDouble files.
+const UPLOAD_SLACK: u64 = 16 << 20;
+/// Without declared sizes (or for folders) at most this much.
+const UPLOAD_UNDECLARED: u64 = 8 << 30;
+const MAX_ENTRIES: usize = 10_000;
 /// How long an accepted `/Ask` keeps `/Upload` open.
 const ASK_VALID: Duration = Duration::from_secs(300);
 const IDLE: Duration = Duration::from_secs(60);
@@ -46,7 +58,7 @@ pub struct AskFile {
 
 impl Ask {
     pub fn parse(body: &[u8]) -> Result<Self> {
-        let v = Value::from_reader(std::io::Cursor::new(body)).context("/Ask: plist non valido")?;
+        let v = parse_plist(body).context("/Ask: plist non valido")?;
         let d = v.as_dictionary().context("/Ask: non è un dizionario")?;
         let s = |k: &str| d.get(k).and_then(Value::as_string).unwrap_or_default().to_string();
         let files = d
@@ -132,23 +144,48 @@ pub struct Receiver {
     pub ui: Box<dyn Ui>,
     tls: Arc<rustls::ServerConfig>,
     accepted: Mutex<HashMap<IpAddr, (Ask, Instant)>>,
+    connections: AtomicUsize,
+    /// One consent prompt at a time: a second /Ask meanwhile is refused.
+    asking: Mutex<()>,
 }
 
 impl Receiver {
     pub fn new(name: String, dest: PathBuf, tls: Arc<rustls::ServerConfig>, ui: Box<dyn Ui>) -> Arc<Self> {
-        Arc::new(Self { name, dest, ui, tls, accepted: Mutex::new(HashMap::new()) })
+        Arc::new(Self {
+            name,
+            dest,
+            ui,
+            tls,
+            accepted: Mutex::new(HashMap::new()),
+            connections: AtomicUsize::new(0),
+            asking: Mutex::new(()),
+        })
     }
 
     /// Serves `listener` (see [`listen`]); one thread per connection.
     pub fn serve_on(self: &Arc<Self>, listener: TcpListener) {
         for conn in listener.incoming() {
-            let Ok(tcp) = conn else { continue };
+            let tcp = match conn {
+                Ok(t) => t,
+                Err(e) => {
+                    // Out of file descriptors or similar: do not spin.
+                    tracing::warn!("accept: {e}");
+                    std::thread::sleep(Duration::from_millis(200));
+                    continue;
+                }
+            };
+            if self.connections.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                self.connections.fetch_sub(1, Ordering::SeqCst);
+                tracing::warn!("troppe connessioni: chiudo quella da {:?}", tcp.peer_addr());
+                continue;
+            }
             let me = Arc::clone(self);
             std::thread::spawn(move || {
                 let peer = tcp.peer_addr().map(|a| a.to_string()).unwrap_or_default();
                 if let Err(e) = me.connection(tcp) {
                     tracing::debug!("connessione {peer}: {e:#}");
                 }
+                me.connections.fetch_sub(1, Ordering::SeqCst);
             });
         }
     }
@@ -156,6 +193,8 @@ impl Receiver {
     fn connection(&self, tcp: TcpStream) -> Result<()> {
         let peer = tcp.peer_addr()?.ip();
         tcp.set_read_timeout(Some(IDLE))?;
+        // A peer that stops reading must not hold the thread forever.
+        tcp.set_write_timeout(Some(IDLE))?;
         tcp.set_nodelay(true)?;
         let tls = rustls::ServerConnection::new(Arc::clone(&self.tls))?;
         let mut s = BufReader::with_capacity(256 << 10, rustls::StreamOwned::new(tls, tcp));
@@ -207,6 +246,11 @@ impl Receiver {
             }
         };
         tracing::info!("richiesta da {:?}: {} (transfer {})", ask.sender, ask.summary(), ask.transfer_id);
+        let Ok(_prompt) = self.asking.try_lock() else {
+            tracing::warn!("un'altra richiesta è già in attesa di risposta: rifiuto");
+            http::respond(s.get_mut(), 403, &[], b"")?;
+            return Ok(false);
+        };
         if !self.ui.ask(&ask) {
             http::respond(s.get_mut(), 403, &[], b"")?;
             return Ok(false);
@@ -244,15 +288,34 @@ impl Receiver {
             s.get_mut().flush()?;
         }
 
+        // Never more than the phone declared (plus headers), and only with room for it.
+        let declared: Option<u64> = if ask.files.iter().any(|f| f.dir || f.size.is_none()) {
+            None
+        } else {
+            Some(ask.files.iter().filter_map(|f| f.size).sum())
+        };
+        let limits = archive::Limits {
+            max_bytes: declared.map_or(UPLOAD_UNDECLARED, |d| d + UPLOAD_SLACK),
+            max_entries: MAX_ENTRIES,
+        };
+        if let Some(free) = free_bytes(&self.dest)
+            && free < limits.max_bytes.min(declared.unwrap_or(0) + UPLOAD_SLACK)
+        {
+            tracing::warn!("spazio insufficiente in {}: {}", self.dest.display(), human(free));
+            self.ui.failed(&format!("spazio insufficiente in {}", self.dest.display()));
+            http::respond(s.get_mut(), 413, &[("Connection", "close")], b"")?;
+            return Ok(false);
+        }
+
         let start = Instant::now();
         let staging = self.dest.join(format!(".lindrop-{}", crate::ident::hex(&crate::ident::random::<4>())));
         fs::create_dir_all(&staging)?;
         let result = (|| -> Result<Vec<PathBuf>> {
             let body = http::body(head, s);
             let x = if ctype == "application/x-dvzip" {
-                archive::extract(BufReader::new(dvzip::Reader::new(body)), &staging)?
+                archive::extract(BufReader::new(dvzip::Reader::new(body)), &staging, &limits)?
             } else {
-                archive::extract(maybe_gzip(BufReader::new(body))?, &staging)?
+                archive::extract(maybe_gzip(BufReader::new(body))?, &staging, &limits)?
             };
             tracing::info!("ricevuti {} file, {}", x.files.len(), human(x.bytes));
             place(&staging, &x.files, &ask, &self.dest)
@@ -262,9 +325,12 @@ impl Receiver {
         match result {
             Ok(paths) => {
                 http::respond(s.get_mut(), 200, &[("Connection", "close")], b"")?;
-                let links = take_weblocs(&paths);
-                if !links.is_empty() {
-                    open_links(&links);
+                // Only a transfer the phone declared as a link opens the browser.
+                if ask.is_link() {
+                    let links = take_weblocs(&paths);
+                    if !links.is_empty() {
+                        open_links(&links);
+                    }
                 }
                 let files: Vec<_> = paths.into_iter().filter(|p| p.exists()).collect();
                 if !files.is_empty() {
@@ -302,17 +368,14 @@ fn place(staging: &Path, files: &[PathBuf], ask: &Ask, dest: &Path) -> Result<Ve
         // A file inside a folder the phone sent as a folder: move the folder once.
         if let Some(d) = rel.ancestors().find(|a| a.file_name().is_some_and(|n| dirs.iter().any(|d| n == *d))) {
             if !moved_dirs.contains(&d.to_path_buf()) {
-                let to = unique(dest, &d.file_name().unwrap().to_string_lossy());
-                fs::rename(staging.join(d), &to)?;
+                let to = move_unique(&staging.join(d), dest, &d.file_name().unwrap().to_string_lossy())?;
                 moved_dirs.push(d.to_path_buf());
                 out.push(to);
             }
             continue;
         }
         let name = rel.file_name().context("file senza nome")?.to_string_lossy();
-        let to = unique(dest, &name);
-        fs::rename(staging.join(rel), &to)?;
-        out.push(to);
+        out.push(move_unique(&staging.join(rel), dest, &name)?);
     }
     if out.is_empty() {
         bail!("l'archivio non conteneva file");
@@ -320,25 +383,73 @@ fn place(staging: &Path, files: &[PathBuf], ask: &Ask, dest: &Path) -> Result<Ve
     Ok(out)
 }
 
-/// `dest/name`, or `dest/stem (n).ext` if taken.
-fn unique(dest: &Path, name: &str) -> PathBuf {
-    let p = dest.join(name);
-    if !p.exists() {
-        return p;
-    }
+/// Candidate names: `name`, then `stem (1).ext`, `stem (2).ext`, …
+fn candidates(dest: &Path, name: &str) -> impl Iterator<Item = PathBuf> {
     let (stem, ext) = match name.rsplit_once('.') {
-        Some((s, e)) if !s.is_empty() => (s, format!(".{e}")),
-        _ => (name, String::new()),
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+        _ => (name.to_string(), String::new()),
     };
-    (1..).map(|n| dest.join(format!("{stem} ({n}){ext}"))).find(|p| !p.exists()).unwrap()
+    let first = dest.join(name);
+    let dest = dest.to_path_buf();
+    std::iter::once(first).chain((1..).map(move |n| dest.join(format!("{stem} ({n}){ext}"))))
+}
+
+/// Moves `src` into `dest` under the first free name. RENAME_NOREPLACE makes
+/// the check and the move one step: two transfers never overwrite each other.
+fn move_unique(src: &Path, dest: &Path, name: &str) -> Result<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let from = std::ffi::CString::new(src.as_os_str().as_bytes())?;
+    for to in candidates(dest, name).take(10_000) {
+        let c_to = std::ffi::CString::new(to.as_os_str().as_bytes())?;
+        let r = unsafe {
+            libc::renameat2(libc::AT_FDCWD, from.as_ptr(), libc::AT_FDCWD, c_to.as_ptr(), libc::RENAME_NOREPLACE)
+        };
+        if r == 0 {
+            return Ok(to);
+        }
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() != Some(libc::EEXIST) {
+            return Err(e).with_context(|| format!("sposto in {}", to.display()));
+        }
+    }
+    bail!("nessun nome libero per {name}")
+}
+
+/// Free space for an unprivileged user on the filesystem of `p`.
+fn free_bytes(p: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(p.as_os_str().as_bytes()).ok()?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    (unsafe { libc::statvfs(c.as_ptr(), &mut st) } == 0).then(|| st.f_bavail as u64 * st.f_frsize as u64)
+}
+
+/// Parses a plist after checking, without building it, that it is not nested
+/// deeper than [`MAX_DEPTH`].
+pub fn parse_plist(body: &[u8]) -> Result<Value> {
+    use plist::stream::{Event, Reader};
+    let mut depth = 0usize;
+    for ev in Reader::new(std::io::Cursor::new(body)) {
+        match ev? {
+            Event::StartArray(_) | Event::StartDictionary(_) => {
+                depth += 1;
+                if depth > MAX_DEPTH {
+                    bail!("plist annidato oltre {MAX_DEPTH} livelli");
+                }
+            }
+            Event::EndCollection => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(Value::from_reader(std::io::Cursor::new(body))?)
 }
 
 /// Links arrive as `.webloc` files: read the URL, delete the file.
 fn take_weblocs(paths: &[PathBuf]) -> Vec<String> {
     let mut urls = Vec::new();
     for p in paths.iter().filter(|p| p.extension().is_some_and(|e| e == "webloc")) {
-        let url = Value::from_file(p)
+        let url = fs::read(p)
             .ok()
+            .and_then(|b| parse_plist(&b).ok())
             .and_then(|v| v.as_dictionary().and_then(|d| d.get("URL")).and_then(Value::as_string).map(str::to_string));
         if let Some(u) = url {
             urls.push(u);
@@ -399,10 +510,26 @@ mod tests {
     #[test]
     fn unique_names() {
         let d = tempfile::tempdir().unwrap();
-        fs::write(d.path().join("a.jpg"), "").unwrap();
-        fs::write(d.path().join("a (1).jpg"), "").unwrap();
-        assert_eq!(unique(d.path(), "a.jpg"), d.path().join("a (2).jpg"));
-        assert_eq!(unique(d.path(), "nuovo"), d.path().join("nuovo"));
+        fs::write(d.path().join("a.jpg"), "vecchio").unwrap();
+        fs::write(d.path().join("a (1).jpg"), "vecchio").unwrap();
+        let src = d.path().join("nuovo.tmp");
+        fs::write(&src, "nuovo").unwrap();
+        assert_eq!(move_unique(&src, d.path(), "a.jpg").unwrap(), d.path().join("a (2).jpg"));
+        assert_eq!(fs::read_to_string(d.path().join("a.jpg")).unwrap(), "vecchio");
+        fs::write(&src, "x").unwrap();
+        assert_eq!(move_unique(&src, d.path(), "nuovo").unwrap(), d.path().join("nuovo"));
+    }
+
+    #[test]
+    fn deep_plist_is_refused() {
+        let deep = format!(
+            "<?xml version=\"1.0\"?><plist version=\"1.0\">{}{}</plist>",
+            "<array>".repeat(100),
+            "</array>".repeat(100)
+        );
+        assert!(parse_plist(deep.as_bytes()).is_err());
+        let ok = "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>a</key><array><string>x</string></array></dict></plist>";
+        assert!(parse_plist(ok.as_bytes()).is_ok());
     }
 
     #[test]

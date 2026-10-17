@@ -37,7 +37,9 @@ impl<R: Read> Reader<R> {
 
     /// Opens the next block; `false` at the end of the body.
     fn open(&mut self) -> io::Result<bool> {
-        let mut src = self.src.take().expect("source present between blocks");
+        // After an error mid-block the source is gone: report it, never panic
+        // (a panic aborts the whole receiver).
+        let mut src = self.src.take().ok_or_else(broken)?;
         let mut d = [0u8; 4];
         let mut got = 0;
         while got < 4 {
@@ -59,7 +61,7 @@ impl<R: Read> Reader<R> {
 
     /// Finishes the current block: drains what zlib left and checks the frame was whole.
     fn close(&mut self) -> io::Result<()> {
-        let mut take = match self.cur.take().expect("open block") {
+        let mut take = match self.cur.take().ok_or_else(broken)? {
             Block::Stored(t) => t,
             Block::Zlib(z) => z.into_inner(),
         };
@@ -70,6 +72,10 @@ impl<R: Read> Reader<R> {
         self.src = Some(take.into_inner());
         Ok(())
     }
+}
+
+fn broken() -> io::Error {
+    io::Error::other("dvzip: stream interrotto da un errore precedente")
 }
 
 impl<R: Read> Read for Reader<R> {
