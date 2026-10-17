@@ -88,6 +88,19 @@ scheda che supporti il monitor mode con iniezione di pacchetti.
   l'annuncio versione 1 e non si mostra a chi vuole inviargli qualcosa:
   `05 12 40252267 00000000 03 <4 hash da 2 byte> 00`.
 
+## Inviare all'iPhone
+
+Sull'iPhone: AirDrop su **"Tutti per 10 minuti"** e la schermata
+**Condividi → AirDrop aperta**, poi `lindrop invia FILE`. Con l'iPhone sulla
+home l'annuncio Bluetooth lo sveglia (entra in AWDL) ma di solito non si
+dichiara ricevitore: è riuscito una volta sola su molte prove (annuncio
+collegabile, 17/10/2026), con nessuna variante riproducibile di tipo,
+versione, hash (zero, `e3b0` = SHA-256 vuoto, veri) o intervallo (30/200 ms).
+Per capirlo serve registrare cosa trasmette un Mac o un iPad mentre invia.
+Annunci di prova: `LINDROP_BLE` (40 cifre esadecimali), `LINDROP_BLE_TYPE`
+(`peripheral`/`broadcast`), `LINDROP_BLE_MS` (con `Experimental = true` in
+`/etc/bluetooth/main.conf`).
+
 ## Limiti che non dipendono da noi
 
 - Sull'iPhone AirDrop deve essere su **"Tutti per 10 minuti"**: "Solo
