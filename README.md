@@ -3,6 +3,8 @@
 **AirDrop tra iPhone e Linux, scritto da zero in Rust.**
 *AirDrop between iPhone and Linux, written from scratch in Rust. Work in progress.*
 
+**Sito:** [polpo21.github.io/lindrop](https://polpo21.github.io/lindrop/) (sorgente in `site/`).
+
 > Stato: fase 1, funzionante con un iPhone su iOS 27 (17/10/2026), in
 > entrambe le direzioni e con il Wi-Fi acceso: ricezione di una foto da 8,4 MB a
 > 3,4 MB/s, invio di una foto da 500 kB in 4 s. Serve il driver di `driver/`.

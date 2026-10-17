@@ -356,7 +356,7 @@ footer{margin-top:clamp(88px,12vw,160px)}
         <article class="cap">
           <p class="k">01 · BLE</p>
           <h2>Il PC sveglia l'iPhone</h2>
-          <p>lindrop trasmette un annuncio Bluetooth AirDrop. Su iOS 27 è alla versione 3: con la versione 1 l'iPhone non si fa trovare.</p>
+          <p>lindrop trasmette un annuncio Bluetooth AirDrop, collegabile. Su iOS 27 è alla versione 3: con la versione 1 l'iPhone non si fa trovare.</p>
           <code class="hex">05 12 40252267 00000000 <b>03</b> ·· ·· ·· ·· 00</code>
         </article>
         <article class="cap">
@@ -372,7 +372,7 @@ footer{margin-top:clamp(88px,12vw,160px)}
         <article class="cap">
           <p class="k">04 · /Ask</p>
           <h2>L'iPhone chiede a te</h2>
-          <p>Arriva la richiesta con l'anteprima. Sull'iPhone AirDrop deve essere su «Tutti per 10 minuti».</p>
+          <p>Arriva la richiesta con l'anteprima. Sull'iPhone AirDrop è su «Tutti per 10 minuti» e la schermata Condividi → AirDrop è aperta.</p>
         </article>
         <article class="cap">
           <p class="k">05 · /Upload</p>
@@ -472,6 +472,7 @@ footer{margin-top:clamp(88px,12vw,160px)}
         <li><b>Un servizio radio</b>parla con il resto tramite un socket</li>
         <li><b>NetworkManager</b>con wpa_supplicant o con iwd</li>
         <li><b>Notifiche</b>accetti o rifiuti ogni file</li>
+        <li><b>Un clic nella barra</b>ricezione accesa o spenta da Noctalia</li>
       </ul>
     </div>
   </div>
@@ -498,8 +499,8 @@ footer{margin-top:clamp(88px,12vw,160px)}
 <section class="sec install wrap" id="installa">
   <div class="install-head rv">
     <p class="eyebrow">Installazione</p>
-    <h2 class="h2">Tre passi e l'iPhone ti vede.</h2>
-    <p style="color:var(--muted)">Lo script installa <code>/usr/local/bin/lindrop</code>, compila OWL e attiva il servizio di sistema <code>lindrop-radio</code>.</p>
+    <h2 class="h2">Quattro passi e l'iPhone ti vede.</h2>
+    <p style="color:var(--muted)">Lo script installa <code>/usr/local/bin/lindrop</code>, compila OWL con le nostre patch, attiva il servizio di sistema <code>lindrop-radio</code> e collega l'interruttore nella barra di Noctalia.</p>
   </div>
   <ol class="steps rv">
     <li>
@@ -512,15 +513,25 @@ footer{margin-top:clamp(88px,12vw,160px)}
       </div>
     </li>
     <li>
+      <h3>Il driver giusto (MT7921)</h3>
+      <p>Ricompila solo il modulo <code>mt7921e</code> con la patch per la velocità: senza, a 5 GHz i nostri pacchetti si perdono. Da rilanciare dopo ogni aggiornamento del kernel.</p>
+      <div class="term-box">
+        <pre><span class="pr">$ </span>./scripts/driver.sh     <span class="c"># --rimuovi per tornare a quello di serie</span></pre>
+      </div>
+    </li>
+    <li>
       <h3>Apri AirDrop sull'iPhone</h3>
       <p>Impostalo su «Tutti per 10 minuti». «Solo contatti» richiede un'identità firmata da Apple.</p>
     </li>
     <li>
       <h3>Ricevi o invia</h3>
       <div class="term-box">
-        <pre><span class="pr">$ </span>lindrop ricevi          <span class="c"># visibile all'iPhone per 10 minuti</span>
-<span class="pr">$ </span>lindrop invia foto.jpg  <span class="c"># invia a un iPhone vicino</span></pre>
+        <pre><span class="pr">$ </span>lindrop                 <span class="c"># stato: radio, driver, ricezione</span>
+<span class="pr">$ </span>lindrop ricevi          <span class="c"># visibile all'iPhone (-m 0: senza limite)</span>
+<span class="pr">$ </span>lindrop invia foto.jpg  <span class="c"># sull'iPhone: Condividi → AirDrop aperto</span>
+<span class="pr">$ </span>lindrop invia -a Paolo foto.jpg  <span class="c"># con più dispositivi vicini</span></pre>
       </div>
+      <p style="margin-top:12px">Con Noctalia non serve il terminale: clic sull'icona AirDrop nella barra per ricevere, clic destro per aprire i file arrivati.</p>
       <details>
         <summary>Configurazione facoltativa</summary>
         <div class="term-box">
@@ -554,13 +565,14 @@ minuti   = 10</pre>
     <article class="note rv">
       <p class="eyebrow">iOS 27</p>
       <h3>Due cose cambiate</h3>
-      <p>Alcuni frame AWDL finiscono con 2 byte di zeri e OWL li rifiutava: c'è una patch in <code>patches/owl-ios27.patch</code>.</p>
+      <p>Alcuni frame AWDL finiscono con 2 byte di zeri e OWL li rifiutava: c'è una patch in <code>patches/owl-1-ios27.patch</code>.</p>
       <p>L'annuncio Bluetooth è passato alla versione 3, con i primi byte del prefisso non più a zero.</p>
     </article>
     <article class="note rv">
       <p class="eyebrow">Limiti</p>
       <h3>Quello che non dipende da noi</h3>
       <p>Solo «Tutti per 10 minuti»: «Solo contatti» vuole un'identità firmata da Apple.</p>
+      <p>Per inviare all'iPhone serve la sua schermata Condividi → AirDrop aperta: dalla home si mostra solo a volte, e non abbiamo ancora capito perché.</p>
       <p>Apple non supporta niente di tutto questo, quindi un aggiornamento di iOS può romperlo.</p>
     </article>
   </div>
