@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>lindrop</title>
+<meta name="description" content="AirDrop tra iPhone e Linux, scritto da zero in Rust.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anybody:wdth,wght@75..125,500..900&amp;family=Hanken+Grotesk:wght@400;500;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap">
+<style>
+/* Layout: una colonna da 1200px; al centro una storia a scorrimento con il palco fermo (didascalie a sinistra, telefono e portatile a destra) che mette in scena un invio vero, passo per passo */
+:root{
+  --bg:#E9EBEF; --bg-2:#F5F6F8; --ink:#0D1015; --muted:#4D5562; --line:#C5CAD3;
+  --accent:#2A44F0; --on-accent:#FFFFFF;
+  --dev:#16191E; --dev-2:#2B3038; --dev-edge:#3B414C;
+  --scr:#0A0C10; --scr-2:#161A22; --scr-ink:#EEF1F6; --scr-dim:#8C95A5; --scr-acc:#8C9CFF; --scr-off:#000000;
+  --ph-sky1:#27306E; --ph-sky2:#B5507E; --ph-sky3:#F39A5B; --ph-sea1:#1B2847; --ph-sea2:#0B1230; --ph-sun:#FFE2A1;
+  --f-display:'Anybody', 'Arial Narrow', system-ui, sans-serif;
+  --f-body:'Hanken Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --f-mono:'Geist Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  --ease:cubic-bezier(.2,.8,.2,1);
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0D0F13; --bg-2:#15181E; --ink:#E7EAF0; --muted:#9AA3B2; --line:#2A2F38;
+  --accent:#8C9CFF; --on-accent:#0D0F13;
+  --dev:#23272F; --dev-2:#323742; --dev-edge:#4A5160; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0D0F13; --bg-2:#15181E; --ink:#E7EAF0; --muted:#9AA3B2; --line:#2A2F38;
+  --accent:#8C9CFF; --on-accent:#0D0F13;
+  --dev:#23272F; --dev-2:#323742; --dev-edge:#4A5160; color-scheme:dark}
+
+*,*::before,*::after{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--ink);font:400 17px/1.6 var(--f-body);
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  -webkit-font-smoothing:antialiased;overflow-x:clip}
+a{color:inherit;text-underline-offset:3px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+h1,h2,h3,p,ul,ol,dl,dd{margin:0}
+ul,ol{padding:0;list-style:none}
+code,.mono{font-family:var(--f-mono)}
+.wrap{max-width:1200px;margin-inline:auto}
+.eyebrow{font:500 12px/1.2 var(--f-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.acc{color:var(--accent)}
+.h2{font:800 clamp(36px,5vw,64px)/.98 var(--f-display);font-stretch:100%;letter-spacing:-.02em;text-wrap:balance}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* testata */
+.top{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-block:20px}
+.brand{font:900 24px/1 var(--f-display);font-stretch:125%;letter-spacing:-.02em;text-decoration:none;display:flex;align-items:center;gap:10px}
+.brand svg{color:var(--accent)}
+.top nav{display:flex;gap:4px;flex-wrap:wrap}
+.top nav a{display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 14px;border-radius:999px;text-decoration:none;font-weight:500;font-size:15px;color:var(--muted)}
+.top nav a:hover{color:var(--ink);background:var(--bg-2)}
+.top nav .gh{color:var(--ink);border:1px solid var(--line)}
+@media (max-width:640px){.top nav .opt{display:none}}
+
+/* apertura */
+.hero{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,400px);gap:40px 56px;padding-block:48px 72px;align-items:end}
+.h1{grid-column:1/-1;font:850 clamp(52px,10.6vw,152px)/.9 var(--f-display);font-stretch:108%;letter-spacing:-.035em}
+.ln{display:block;overflow:hidden;padding-bottom:.1em;margin-bottom:-.1em}
+.ln>span{display:inline-block;animation:up 1s var(--ease) both;animation-delay:calc(var(--i,0)*110ms + 80ms)}
+@keyframes up{from{transform:translateY(108%)}}
+.lede{font-size:clamp(18px,1.7vw,21px);line-height:1.5;max-width:34em;color:var(--ink)}
+.hero-main{display:flex;flex-direction:column;gap:28px;min-width:0;animation:fade .9s .45s var(--ease) both}
+@keyframes fade{from{opacity:0;transform:translateY(16px)}}
+.cmd{display:flex;align-items:stretch;border:1px solid var(--line);border-radius:14px;background:var(--bg-2);max-width:640px;min-width:0}
+.cmd code{flex:1 1 auto;min-width:0;overflow-x:auto;white-space:nowrap;padding:14px 18px;font-size:14px;line-height:1.6;scrollbar-width:thin}
+.pr{color:var(--accent);user-select:none}
+.copy{flex:none;display:inline-flex;align-items:center;gap:8px;min-height:44px;margin:4px;padding:0 16px;border:0;border-radius:10px;background:var(--ink);color:var(--bg);font:600 14px/1 var(--f-body);cursor:pointer;transition:transform .2s var(--ease)}
+.copy:active{transform:scale(.96)}
+.spec{display:grid;grid-template-columns:auto 1fr;gap:10px 20px;font-size:15px;border-top:1px solid var(--line);padding-top:18px;animation:fade .9s .6s var(--ease) both}
+.spec dt{font:500 12px/1.9 var(--f-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.cue{grid-column:1/-1;display:inline-flex;align-items:center;gap:14px;justify-self:start;min-height:44px;font:500 13px/1 var(--f-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);text-decoration:none}
+.cue i{display:block;width:64px;height:1px;background:var(--line);position:relative;overflow:hidden}
+.cue i::after{content:"";position:absolute;inset:0;background:var(--accent);transform:translateX(-100%);animation:cue 2.2s 1.2s var(--ease) infinite}
+@keyframes cue{60%,100%{transform:translateX(100%)}}
+@media (max-width:860px){.hero{grid-template-columns:minmax(0,1fr)}}
+
+/* storia */
+.story{height:700vh;position:relative}
+.pin{position:sticky;top:env(safe-area-inset-top,0px);height:100vh;height:100svh;display:grid;grid-template-columns:minmax(260px,360px) minmax(0,1fr);gap:48px;align-items:center;overflow:clip}
+.side{display:flex;flex-direction:column;gap:28px;min-width:0}
+.rail{display:flex;flex-direction:column;gap:2px}
+.rail button{display:flex;align-items:center;gap:12px;width:100%;min-height:36px;padding:0;border:0;background:none;color:var(--muted);font:500 14px/1 var(--f-body);cursor:pointer;text-align:left}
+.rail button::before{content:"";width:18px;height:2px;border-radius:2px;background:var(--line);transition:width .4s var(--ease),background-color .4s}
+.rail button .n{font:500 12px/1 var(--f-mono);font-variant-numeric:tabular-nums}
+.rail button.done::before{background:var(--ink)}
+.rail button[aria-current]{color:var(--ink)}
+.rail button[aria-current]::before{width:44px;background:var(--accent)}
+.caps{display:grid}
+.cap{grid-area:1/1;display:flex;flex-direction:column;gap:14px;opacity:0;transform:translateY(14px);transition:opacity .45s,transform .6s var(--ease);pointer-events:none}
+.cap.on{opacity:1;transform:none;pointer-events:auto}
+.cap h2{font:800 clamp(28px,3vw,40px)/1.02 var(--f-display);font-stretch:96%;letter-spacing:-.02em;text-wrap:balance}
+.cap p{color:var(--muted);font-size:17px;max-width:32em}
+.cap .k{font:500 12px/1 var(--f-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+.hex{display:block;font-size:13px;line-height:1.6;padding:10px 12px;border-radius:10px;background:var(--bg-2);border:1px solid var(--line);word-spacing:.25em;overflow-wrap:anywhere}
+.hex b{color:var(--accent);font-weight:500}
+.stage-box{position:relative;height:min(78svh,640px);min-width:0}
+
+.stage{--W:880;--H:560;position:absolute;left:50%;top:50%;width:calc(var(--W)*1px);height:calc(var(--H)*1px);transform:translate(-50%,-50%) scale(var(--s,1))}
+.rings{position:absolute;left:610px;top:230px;width:0;height:0;opacity:0;transition:opacity .6s}
+.rings i{position:absolute;left:0;top:0;width:760px;height:760px;margin:-380px 0 0 -380px;border:1.5px solid var(--accent);border-radius:50%;transform:scale(.08);opacity:0;animation:ring 2.4s linear infinite;animation-play-state:paused}
+.rings i:nth-child(2){animation-delay:.8s}.rings i:nth-child(3){animation-delay:1.6s}
+@keyframes ring{0%{transform:scale(.08);opacity:.9}100%{transform:scale(1);opacity:0}}
+.s1 .rings{opacity:1}.s1 .rings i{animation-play-state:running}
+.s3 .rings{opacity:0}.s3 .rings i{animation-play-state:paused}
+
+.link{position:absolute;left:228px;top:250px;width:108px;height:2px;background:repeating-linear-gradient(90deg,var(--accent) 0 6px,transparent 6px 10px);transform:scaleX(0);transform-origin:right;transition:transform .8s var(--ease)}
+.s2 .link{transform:none}
+.link-label{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);white-space:nowrap;font-size:11px;color:var(--muted);opacity:0;transition:opacity .4s .4s}
+.s2 .link-label{opacity:1}
+.pkt{position:absolute;left:0;top:-3px;width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 22%,transparent);opacity:0;animation:pkt-x .9s linear infinite;animation-play-state:paused}
+.pkt:nth-of-type(2){animation-delay:.3s}.pkt:nth-of-type(3){animation-delay:.6s}
+@keyframes pkt-x{from{transform:translateX(104px)}to{transform:translateX(-6px)}}
+@keyframes pkt-y{from{transform:translateY(-6px)}to{transform:translateY(50px)}}
+.s5 .pkt{opacity:1;animation-play-state:running}
+.s6 .pkt{opacity:0;animation-play-state:paused}
+
+/* telefono */
+.phone{position:absolute;left:0;top:55px;width:220px;height:450px;padding:8px;border-radius:40px;background:var(--dev);box-shadow:inset 0 0 0 1px var(--dev-edge),0 40px 60px -30px rgba(10,14,30,.45);z-index:2}
+.ph{position:relative;width:100%;height:100%;border-radius:32px;overflow:hidden;background:radial-gradient(120% 70% at 30% 0%,var(--scr-2),var(--scr) 70%);color:var(--scr-ink)}
+.ph-home{position:absolute;inset:44px 0 auto;text-align:center}
+.ph-time{font:600 58px/1 var(--f-display);font-stretch:78%;letter-spacing:-.02em}
+.ph-date{font-size:12px;color:var(--scr-dim);margin-top:6px}
+.photo{position:relative;background:radial-gradient(circle at 64% 55%,var(--ph-sun) 0 7%,transparent 7.5%),linear-gradient(180deg,var(--ph-sky1) 0%,var(--ph-sky2) 40%,var(--ph-sky3) 57.5%,var(--ph-sea1) 58%,var(--ph-sea2) 100%);overflow:hidden}
+.photo::after{content:"";position:absolute;left:57%;width:14%;top:59%;bottom:12%;background:repeating-linear-gradient(180deg,var(--ph-sun) 0 2px,transparent 2px 7px);opacity:.55;-webkit-mask:linear-gradient(#000,transparent);mask:linear-gradient(#000,transparent)}
+.ph-photo{position:absolute;inset:0;opacity:0;transform:scale(1.12);transition:opacity .7s,transform 1.2s var(--ease)}
+.s6 .ph-photo{opacity:1;transform:none}
+.ph-done{position:absolute;left:50%;bottom:22px;transform:translate(-50%,10px);white-space:nowrap;padding:7px 12px;border-radius:999px;background:color-mix(in srgb,var(--scr) 70%,transparent);font:500 11px/1 var(--f-mono);opacity:0;transition:opacity .5s .5s,transform .6s .5s var(--ease)}
+.s6 .ph-done{opacity:1;transform:translate(-50%,0)}
+.sheet{position:absolute;left:8px;right:8px;bottom:8px;display:grid;padding:16px;border-radius:26px;background:var(--scr-2);box-shadow:inset 0 0 0 1px rgba(255,255,255,.06);transform:translateY(118%);transition:transform .7s var(--ease)}
+.s4 .sheet{transform:none}.s6 .sheet{transform:translateY(118%)}
+.sheet>div{grid-area:1/1;display:flex;flex-direction:column;align-items:center;text-align:center;gap:4px;transition:opacity .35s}
+.thumb{width:76px;height:76px;border-radius:14px;margin-bottom:8px}
+.sh-t{font-weight:600;font-size:15px}
+.sh-s{font-size:12px;color:var(--scr-dim)}
+.sh-btns{display:flex;gap:8px;width:100%;margin-top:12px}
+.sh-btns span{flex:1;padding:10px 0;border-radius:12px;font-size:13px;font-weight:600;background:rgba(255,255,255,.08);transition:transform .2s,background-color .2s}
+.sh-btns .yes{background:var(--scr-acc);color:var(--scr)}
+.tap .sh-btns .yes{transform:scale(.92);background:var(--scr-ink)}
+.sheet-prog{opacity:0;justify-content:center}
+.s5 .sheet-ask{opacity:0}.s5 .sheet-prog{opacity:1}
+.bar{width:100%;height:6px;border-radius:6px;background:rgba(255,255,255,.1);overflow:hidden;margin:10px 0 4px}
+.bar i,.tbar i{display:block;height:100%;background:var(--scr-acc);transform:scaleX(var(--tp,0));transform-origin:left}
+.ph-sleep{position:absolute;inset:0;background:var(--scr-off);transition:opacity .8s}
+.s1 .ph-sleep{opacity:0}
+
+/* portatile */
+.laptop{position:absolute;left:340px;top:60px;width:540px;z-index:2}
+.lid{width:520px;height:340px;margin:0 auto;padding:12px;border-radius:16px 16px 4px 4px;background:var(--dev);box-shadow:inset 0 0 0 1px var(--dev-edge)}
+.lp{position:relative;height:100%;border-radius:4px;overflow:hidden;background:radial-gradient(110% 90% at 85% 110%,color-mix(in srgb,var(--scr-acc) 28%,transparent),transparent 60%),var(--scr);color:var(--scr-ink)}
+.base{height:16px;border-radius:2px 2px 16px 16px;background:linear-gradient(var(--dev-2),var(--dev));box-shadow:inset 0 1px 0 var(--dev-edge),0 40px 50px -28px rgba(10,14,30,.5)}
+.term{position:absolute;left:18px;top:18px;width:350px;height:232px;border-radius:9px;background:var(--scr-2);box-shadow:inset 0 0 0 1px rgba(255,255,255,.07),0 20px 40px -20px rgba(0,0,0,.6);overflow:hidden}
+.term-bar{display:flex;align-items:center;gap:6px;padding:9px 12px;border-bottom:1px solid rgba(255,255,255,.06);font:500 10.5px/1 var(--f-mono);color:var(--scr-dim)}
+.term-bar i{width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.14)}
+.term-bar span{margin-left:8px}
+.tb{padding:12px 14px;font:400 11.5px/1.75 var(--f-mono);white-space:nowrap}
+.tb .pr{color:var(--scr-acc)}
+.typed{display:inline-block;vertical-align:bottom;overflow:hidden;width:0;transition:width .9s steps(22,end)}
+.s1 .typed{width:22ch}
+.caret{display:inline-block;width:.6em;height:1.1em;vertical-align:-.2em;background:var(--scr-ink);animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.l{color:var(--scr-dim);opacity:0;transform:translateY(4px);transition:opacity .35s,transform .4s var(--ease)}
+.l b{color:var(--scr-ink);font-weight:500}
+.s1 .l1{opacity:1;transform:none;transition-delay:.8s}
+.s2 .l2,.s3 .l3,.s4 .l4,.s5 .l5,.s6 .l6{opacity:1;transform:none}
+.l4 .ok,.s5 .l4 .wait{display:none}.s5 .l4 .ok{display:inline}
+.l6 b{color:var(--scr-acc)}
+.tbar{display:inline-block;width:96px;height:7px;margin:0 6px;vertical-align:middle;border-radius:2px;background:rgba(255,255,255,.1);overflow:hidden}
+.file{position:absolute;right:26px;top:26px;width:72px;display:flex;flex-direction:column;align-items:center;gap:6px;font:500 10.5px/1 var(--f-mono);color:var(--scr-ink)}
+.file .photo{width:64px;height:48px;border-radius:5px;box-shadow:0 0 0 2px transparent;transition:box-shadow .3s}
+.s1 .file .photo{box-shadow:0 0 0 2px var(--scr-acc)}
+.s5 .file .photo{animation:lift 1s var(--ease) infinite alternate}
+.s6 .file .photo{animation:none}
+@keyframes lift{to{transform:translateY(-3px)}}
+
+@media (max-width:760px){
+  .pin{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto;gap:8px;padding-block:12px 20px}
+  .side{order:2;gap:14px}
+  .side>.eyebrow{display:none}
+  .stage-box{height:100%}
+  .rail{flex-direction:row;gap:6px}
+  .rail li{flex:1}
+  .rail button{min-height:32px;justify-content:center}
+  .rail button::before{width:100%;flex:1}
+  .rail button[aria-current]::before{width:100%}
+  .rail .n,.rail .lab{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+  .cap{gap:8px}
+  .cap h2{font-size:26px}
+  .cap p{font-size:15px}
+  .hex{font-size:11.5px;padding:8px 10px}
+  .stage{--W:380;--H:650}
+  .laptop{left:10px;top:0;transform:scale(.6667);transform-origin:0 0}
+  .phone{left:107px;top:300px;transform:scale(.75);transform-origin:0 0}
+  .rings{left:190px;top:118px}
+  .link{left:189px;top:243px;width:2px;height:52px;background:repeating-linear-gradient(180deg,var(--accent) 0 6px,transparent 6px 10px);transform:scaleY(0);transform-origin:top}
+  .link-label{left:14px;bottom:auto;top:50%;transform:translateY(-50%)}
+  .pkt{left:-3px;top:0;animation-name:pkt-y}
+}
+
+/* sezioni */
+.sec{padding-block:clamp(88px,12vw,160px) 0}
+.figures{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:32px 48px;padding-top:clamp(64px,8vw,120px)}
+.fig{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--ink);padding-top:20px;min-width:0}
+.fig-n{font:850 clamp(84px,14vw,210px)/.86 var(--f-display);font-stretch:82%;letter-spacing:-.04em;font-variant-numeric:tabular-nums}
+.fig-n span{font-size:.3em;font-stretch:110%;letter-spacing:0;margin-left:.15em;color:var(--accent)}
+.fig p:last-child{color:var(--muted);max-width:26em}
+.fig-note{grid-column:1/-1;font-size:12px;color:var(--muted)}
+@media (max-width:640px){.figures{grid-template-columns:minmax(0,1fr)}}
+
+.why{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:48px 72px;align-items:start}
+.why-head{display:flex;flex-direction:column;gap:20px}
+.why-head p:last-child{color:var(--muted);max-width:30em}
+.versus{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:32px;padding-top:8px}
+.versus ul{display:flex;flex-direction:column;margin-top:14px}
+.versus li{padding:16px 0;border-top:1px solid var(--line);font-size:17px}
+.old li{color:var(--muted)}
+.old li span{position:relative}
+.old li span::after{content:"";position:absolute;left:-2px;right:-2px;top:52%;height:1.5px;background:var(--ink);transform-origin:left}
+.new li b{font-weight:600;display:block}
+.new li{color:var(--muted)}
+@media (max-width:900px){.why{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:520px){.versus{grid-template-columns:minmax(0,1fr)}}
+
+.stack-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:end;gap:20px 48px;margin-bottom:40px}
+.stack-head p{color:var(--muted);max-width:28em}
+.layers{border-bottom:1px solid var(--line)}
+.layer{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,5fr) minmax(0,2fr) minmax(0,2fr);gap:8px 32px;align-items:baseline;padding:22px 0;border-top:1px solid var(--line);transition:background-color .3s}
+.layer h3{font:800 clamp(34px,4.4vw,58px)/1 var(--f-display);font-stretch:76%;letter-spacing:-.01em;transition:color .3s,transform .5s var(--ease)}
+.layer:hover h3{color:var(--accent);transform:translateX(8px)}
+.layer p{color:var(--muted)}
+.layer code{font-size:13px}
+.state{justify-self:start;font:500 12px/1 var(--f-mono);letter-spacing:.06em;padding:7px 10px;border-radius:999px;background:var(--ink);color:var(--bg)}
+.state.later{background:transparent;color:var(--muted);box-shadow:inset 0 0 0 1px var(--line)}
+.stack-foot{margin-top:20px;font-size:15px;color:var(--muted)}
+@media (max-width:820px){.layer{grid-template-columns:minmax(0,1fr) auto}.layer p{grid-column:1/-1}.layer code{grid-column:1}.state{grid-row:1;grid-column:2;align-self:center}}
+
+.install{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:48px 72px}
+.install-head{display:flex;flex-direction:column;gap:20px}
+.steps{display:flex;flex-direction:column;counter-reset:s}
+.steps>li{display:grid;grid-template-columns:44px minmax(0,1fr);gap:4px 16px;padding:24px 0;border-top:1px solid var(--line);counter-increment:s}
+.steps>li::before{content:counter(s,decimal-leading-zero);font:500 13px/1.9 var(--f-mono);color:var(--accent)}
+.steps h3{font-size:19px;font-weight:600;grid-column:2}
+.steps>li>*:not(h3){grid-column:2}
+.steps p{color:var(--muted)}
+.term-box{margin-top:12px;border-radius:14px;background:var(--dev);color:var(--scr-ink);overflow:hidden;box-shadow:inset 0 0 0 1px var(--dev-edge)}
+.term-box-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:4px 4px 4px 16px;border-bottom:1px solid var(--dev-edge);font:500 12px/1 var(--f-mono);color:var(--scr-dim)}
+.term-box .copy{background:var(--scr-ink);color:var(--dev)}
+.term-box pre{margin:0;padding:16px 18px 18px;overflow-x:auto;font:400 14px/1.85 var(--f-mono)}
+.term-box .pr{color:var(--scr-acc)}
+.term-box .c{color:var(--scr-dim)}
+details{margin-top:12px;border-top:1px solid var(--line)}
+summary{display:flex;align-items:center;justify-content:space-between;min-height:52px;cursor:pointer;font-weight:600;list-style:none}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"+";font:400 22px/1 var(--f-mono);color:var(--muted);transition:transform .3s var(--ease)}
+details[open] summary::after{transform:rotate(45deg)}
+details .term-box{margin-top:0;margin-bottom:8px}
+@media (max-width:900px){.install{grid-template-columns:minmax(0,1fr)}}
+
+.notes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px}
+.note{display:flex;flex-direction:column;gap:14px;padding:28px;border-radius:20px;background:var(--bg-2);min-width:0}
+.note h3{font:800 26px/1.05 var(--f-display);font-stretch:92%}
+.note p{color:var(--muted);font-size:16px}
+.note code{font-size:.88em;color:var(--ink)}
+.notes-head{margin-bottom:40px}
+@media (max-width:900px){.notes{grid-template-columns:minmax(0,1fr)}}
+
+.cta{display:flex;flex-wrap:wrap;align-items:end;justify-content:space-between;gap:28px}
+.cta p{color:var(--muted);max-width:30em;margin-top:16px}
+.btns{display:flex;flex-wrap:wrap;gap:12px}
+.btn{display:inline-flex;align-items:center;gap:10px;min-height:52px;padding:0 24px;border-radius:999px;font-weight:600;text-decoration:none;transition:transform .3s var(--ease)}
+.btn:hover{transform:translateY(-2px)}
+.btn.pri{background:var(--accent);color:var(--on-accent)}
+.btn.sec{box-shadow:inset 0 0 0 1.5px var(--ink)}
+
+footer{margin-top:clamp(88px,12vw,160px)}
+.foot-row{display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px 32px;padding-block:24px;border-top:1px solid var(--line);font-size:14px;color:var(--muted)}
+.mark{overflow:hidden;height:.74em;font:900 clamp(80px,15.5vw,224px)/1 var(--f-display);font-stretch:125%;letter-spacing:-.045em;color:var(--ink);user-select:none}
+
+@supports (animation-timeline: view()){
+  @media (prefers-reduced-motion: no-preference){
+    .rv{animation:rv linear both;animation-timeline:view();animation-range:entry 0% entry 70%}
+    .old li span::after{animation:strike linear both;animation-timeline:view();animation-range:entry 60% cover 40%}
+    .mark span{display:inline-block;animation:rise linear both;animation-timeline:view();animation-range:entry 0% cover 50%}
+  }
+}
+@keyframes rv{from{opacity:0;transform:translateY(56px)}}
+@keyframes strike{from{transform:scaleX(0)}}
+@keyframes rise{from{transform:translateY(60%)}}
+
+@media (prefers-reduced-motion: reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;transition-delay:0s!important}
+}
+</style>
+</head>
+<body>
+
+<header class="top wrap">
+  <a class="brand" href="#">
+    <svg width="26" height="26" viewBox="0 0 26 26" fill="none" aria-hidden="true"><circle cx="13" cy="13" r="2.6" fill="currentColor"/><path d="M8 18a7 7 0 0 1 0-10M18 8a7 7 0 0 1 0 10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M4.3 21.7a12.3 12.3 0 0 1 0-17.4M21.7 4.3a12.3 12.3 0 0 1 0 17.4" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".4"/></svg>
+    lindrop
+  </a>
+  <nav aria-label="Principale">
+    <a class="opt" href="#come">Come funziona</a>
+    <a class="opt" href="#installa">Installa</a>
+    <a class="gh" href="https://github.com/polpo21/lindrop">GitHub
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg>
+    </a>
+  </nav>
+</header>
+
+<main>
+<section class="hero wrap">
+  <h1 class="h1">
+    <span class="ln"><span style="--i:0">AirDrop tra</span></span>
+    <span class="ln"><span style="--i:1">iPhone e</span></span>
+    <span class="ln"><span style="--i:2" class="acc">Linux.</span></span>
+  </h1>
+  <div class="hero-main">
+    <p class="lede">Un solo programma in Rust, scritto da zero. Mandi e ricevi foto tra iPhone e PC senza spegnere il Wi-Fi, e accetti ogni file da una notifica del desktop.</p>
+    <div class="cmd">
+      <code id="cmd-hero"><span class="pr">$ </span>git clone https://github.com/polpo21/lindrop &amp;&amp; cd lindrop &amp;&amp; ./install.sh</code>
+      <button type="button" class="copy" data-copy="git clone https://github.com/polpo21/lindrop &amp;&amp; cd lindrop &amp;&amp; ./install.sh" aria-controls="cmd-hero"><span class="copy-l">Copia</span></button>
+    </div>
+  </div>
+  <dl class="spec">
+    <dt>Stato</dt><dd>Fase 1, funziona nei due sensi</dd>
+    <dt>Provato</dt><dd>iPhone con iOS 27</dd>
+    <dt>Scheda</dt><dd>MediaTek MT7921</dd>
+    <dt>Licenza</dt><dd>GPL-3.0-or-later</dd>
+  </dl>
+  <a class="cue" href="#come">Scorri e guarda un invio <i></i></a>
+</section>
+
+<section class="story" id="come" aria-label="Come funziona un invio">
+  <div class="pin wrap">
+    <div class="side">
+      <p class="eyebrow">Illustrazione · non è l'interfaccia di iOS</p>
+      <ol class="rail">
+        <li><button type="button"><span class="n">01</span><span class="lab">Bluetooth</span></button></li>
+        <li><button type="button"><span class="n">02</span><span class="lab">Wi-Fi diretto</span></button></li>
+        <li><button type="button"><span class="n">03</span><span class="lab">Ricerca</span></button></li>
+        <li><button type="button"><span class="n">04</span><span class="lab">Richiesta</span></button></li>
+        <li><button type="button"><span class="n">05</span><span class="lab">Invio</span></button></li>
+        <li><button type="button"><span class="n">06</span><span class="lab">Arrivata</span></button></li>
+      </ol>
+      <div class="caps">
+        <article class="cap on">
+          <p class="k">Pronti</p>
+          <h2>Un PC, un iPhone, una foto.</h2>
+          <p>Scorri: lindrop la manda al telefono passo per passo, come succede davvero.</p>
+        </article>
+        <article class="cap">
+          <p class="k">01 · BLE</p>
+          <h2>Il PC sveglia l'iPhone</h2>
+          <p>lindrop trasmette un annuncio Bluetooth AirDrop. Su iOS 27 è alla versione 3: con la versione 1 l'iPhone non si fa trovare.</p>
+          <code class="hex">05 12 40252267 00000000 <b>03</b> ·· ·· ·· ·· 00</code>
+        </article>
+        <article class="cap">
+          <p class="k">02 · AWDL</p>
+          <h2>Si apre il Wi-Fi diretto</h2>
+          <p>Nasce awdl0, il collegamento diretto di Apple, sullo stesso canale del tuo Wi-Fi. La connessione a internet resta accesa.</p>
+        </article>
+        <article class="cap">
+          <p class="k">03 · mDNS</p>
+          <h2>Il PC trova il telefono</h2>
+          <p>Su awdl0 lindrop cerca il servizio _airdrop._tcp e l'iPhone risponde.</p>
+        </article>
+        <article class="cap">
+          <p class="k">04 · /Ask</p>
+          <h2>L'iPhone chiede a te</h2>
+          <p>Arriva la richiesta con l'anteprima. Sull'iPhone AirDrop deve essere su «Tutti per 10 minuti».</p>
+        </article>
+        <article class="cap">
+          <p class="k">05 · /Upload</p>
+          <h2>La foto viaggia</h2>
+          <p>Dentro una connessione HTTPS, impacchettata in un archivio cpio compresso con dvzip, il formato di iOS 18 e successivi.</p>
+        </article>
+        <article class="cap">
+          <p class="k">06 · Fatto</p>
+          <h2>Arrivata.</h2>
+          <p>500 kB in 4 secondi. Al contrario, con <code>lindrop ricevi</code>, una foto da 8,4 MB arriva a 3,4 MB/s.</p>
+        </article>
+      </div>
+    </div>
+
+    <div class="stage-box">
+      <div class="stage" id="stage">
+        <div class="rings" aria-hidden="true"><i></i><i></i><i></i></div>
+        <div class="link" aria-hidden="true"><span class="link-label mono">awdl0 · canale 36</span><i class="pkt"></i><i class="pkt"></i><i class="pkt"></i></div>
+
+        <div class="phone" role="img" aria-label="Un telefono illustrato che riceve la foto">
+          <div class="ph">
+            <div class="ph-home"><div class="ph-time">14:06</div><div class="ph-date">sabato 17 ottobre</div></div>
+            <div class="ph-photo photo"></div>
+            <div class="ph-done">foto.jpg · 500 kB</div>
+            <div class="sheet">
+              <div class="sheet-ask">
+                <div class="thumb photo"></div>
+                <p class="sh-t">PC di Paolo</p>
+                <p class="sh-s">vuole inviarti una foto</p>
+                <div class="sh-btns"><span>Rifiuta</span><span class="yes">Accetta</span></div>
+              </div>
+              <div class="sheet-prog">
+                <p class="sh-t">Ricezione da PC di Paolo</p>
+                <div class="bar"><i></i></div>
+                <p class="sh-s mono"><span class="pct">0</span>% di 500 kB</p>
+              </div>
+            </div>
+            <div class="ph-sleep"></div>
+          </div>
+        </div>
+
+        <div class="laptop" role="img" aria-label="Un portatile illustrato con il terminale che invia la foto">
+          <div class="lid"><div class="lp">
+            <div class="term">
+              <div class="term-bar"><i></i><i></i><i></i><span>~/Immagini</span></div>
+              <div class="tb">
+                <p><span class="pr">$ </span><span class="typed">lindrop invia foto.jpg</span><span class="caret"></span></p>
+                <p class="l l1">› annuncio BLE <b>v3</b></p>
+                <p class="l l2">› <b>awdl0</b> attiva · canale 36</p>
+                <p class="l l3">› trovato <b>iPhone</b> · _airdrop._tcp</p>
+                <p class="l l4">› /Ask · <span class="wait">in attesa…</span><b class="ok">accettato</b></p>
+                <p class="l l5">› /Upload<span class="tbar"><i></i></span><b><span class="pct">0</span>%</b></p>
+                <p class="l l6">› <b>inviato</b> · 500 kB in 4 s</p>
+              </div>
+            </div>
+            <div class="file"><div class="photo"></div><span>foto.jpg</span></div>
+          </div></div>
+          <div class="base"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="figures wrap" aria-label="Velocità misurate">
+  <div class="fig rv">
+    <p class="fig-n">3,4<span>MB/s</span></p>
+    <p>in ricezione, con una foto da 8,4 MB dall'iPhone al PC</p>
+  </div>
+  <div class="fig rv">
+    <p class="fig-n">4<span>s</span></p>
+    <p>per mandare all'iPhone una foto da 500 kB, dal Bluetooth alla fine</p>
+  </div>
+  <p class="fig-note mono">Misurato il 17/10/2026 · iPhone con iOS 27 · Wi-Fi acceso · scheda MT7921</p>
+</section>
+
+<section class="sec why wrap">
+  <div class="why-head rv">
+    <p class="eyebrow">Perché esiste</p>
+    <h2 class="h2">Le scoperte di altri, in un solo programma.</h2>
+    <p><a href="https://github.com/seemoo-lab/opendrop">OpenDrop</a>, <a href="https://github.com/seemoo-lab/owl">OWL</a>, <a href="https://github.com/jedbillyb/airdrop-mt7921">airdrop-mt7921</a> e <a href="https://github.com/t4t5/omdrop-owl">omdrop-owl</a> hanno capito come parlare con l'AirDrop di un iPhone. lindrop parte da lì e rifà tutto per stare bene su un desktop Linux normale.</p>
+  </div>
+  <div class="versus rv">
+    <div>
+      <p class="eyebrow">Prima</p>
+      <ul class="old">
+        <li><span>Script shell</span></li>
+        <li><span>Python con 17 patch sopra</span></li>
+        <li><span>Un demone C a parte</span></li>
+        <li><span>sudo senza password</span></li>
+      </ul>
+    </div>
+    <div>
+      <p class="eyebrow acc">lindrop</p>
+      <ul class="new">
+        <li><b>Un binario Rust</b>niente patch da riapplicare</li>
+        <li><b>Un servizio radio</b>parla con il resto tramite un socket</li>
+        <li><b>NetworkManager</b>con wpa_supplicant o con iwd</li>
+        <li><b>Notifiche</b>accetti o rifiuti ogni file</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="sec wrap" aria-labelledby="stack-t">
+  <div class="stack-head rv">
+    <div>
+      <p class="eyebrow">Sotto il cofano</p>
+      <h2 class="h2" id="stack-t" style="margin-top:20px">Cinque strati,<br>quattro già in Rust.</h2>
+    </div>
+    <p>Ogni strato è un modulo di lindrop. Il Wi-Fi diretto per ora passa da OWL; nella fase 2 diventa Rust anche lui.</p>
+  </div>
+  <div class="layers">
+    <div class="layer rv"><h3>BLE</h3><p>Il PC sveglia l'iPhone quando vuole inviargli qualcosa.</p><code>ble</code><span class="state">Rust</span></div>
+    <div class="layer rv"><h3>AWDL</h3><p>Il Wi-Fi diretto di Apple: l'interfaccia awdl0 tra PC e telefono.</p><code>OWL</code><span class="state later">fase 2</span></div>
+    <div class="layer rv"><h3>mDNS</h3><p>Il servizio _airdrop._tcp, annunciato e cercato su awdl0.</p><code>mdns</code><span class="state">Rust</span></div>
+    <div class="layer rv"><h3>HTTPS</h3><p>/Discover, /Ask e /Upload, con messaggi plist.</p><code>airdrop · send</code><span class="state">Rust</span></div>
+    <div class="layer rv"><h3>cpio</h3><p>L'archivio, compresso con dvzip da iOS 18, con gzip prima.</p><code>archive · dvzip</code><span class="state">Rust</span></div>
+  </div>
+  <p class="stack-foot">I dettagli sono in <a href="https://github.com/polpo21/lindrop/blob/main/docs/ARCHITETTURA.md">docs/ARCHITETTURA.md</a>, la ricerca sui progetti esistenti in <a href="https://github.com/polpo21/lindrop/tree/main/docs/ricerca">docs/ricerca</a>.</p>
+</section>
+
+<section class="sec install wrap" id="installa">
+  <div class="install-head rv">
+    <p class="eyebrow">Installazione</p>
+    <h2 class="h2">Tre passi e l'iPhone ti vede.</h2>
+    <p style="color:var(--muted)">Lo script installa <code>/usr/local/bin/lindrop</code>, compila OWL e attiva il servizio di sistema <code>lindrop-radio</code>.</p>
+  </div>
+  <ol class="steps rv">
+    <li>
+      <h3>Clona e installa</h3>
+      <div class="term-box">
+        <div class="term-box-bar"><span>terminale</span><button type="button" class="copy" data-copy="git clone https://github.com/polpo21/lindrop &amp;&amp; cd lindrop &amp;&amp; ./install.sh" aria-controls="cmd-inst"><span class="copy-l">Copia</span></button></div>
+        <pre id="cmd-inst"><span class="pr">$ </span>git clone https://github.com/polpo21/lindrop
+<span class="pr">$ </span>cd lindrop
+<span class="pr">$ </span>./install.sh</pre>
+      </div>
+    </li>
+    <li>
+      <h3>Apri AirDrop sull'iPhone</h3>
+      <p>Impostalo su «Tutti per 10 minuti». «Solo contatti» richiede un'identità firmata da Apple.</p>
+    </li>
+    <li>
+      <h3>Ricevi o invia</h3>
+      <div class="term-box">
+        <pre><span class="pr">$ </span>lindrop ricevi          <span class="c"># visibile all'iPhone per 10 minuti</span>
+<span class="pr">$ </span>lindrop invia foto.jpg  <span class="c"># invia a un iPhone vicino</span></pre>
+      </div>
+      <details>
+        <summary>Configurazione facoltativa</summary>
+        <div class="term-box">
+          <div class="term-box-bar"><span>~/.config/lindrop/config.toml</span></div>
+          <pre>nome     = "PC di Paolo"         <span class="c"># come ti vede l'iPhone</span>
+cartella = "/home/io/Scaricati"
+modalita = "automatica"          <span class="c"># "condivisa" o "esclusiva"</span>
+canale   = 0                     <span class="c"># 0 = quello del Wi-Fi</span>
+velocita = ""                    <span class="c"># mcs7 + aggregazione</span>
+paese    = "IT"
+chiedi   = true                  <span class="c"># notifica Accetta/Rifiuta</span>
+minuti   = 10</pre>
+        </div>
+      </details>
+    </li>
+  </ol>
+</section>
+
+<section class="sec wrap" aria-labelledby="notes-t">
+  <div class="notes-head rv">
+    <p class="eyebrow">Note dal campo</p>
+    <h2 class="h2" id="notes-t" style="margin-top:20px">Cosa serve, cosa abbiamo scoperto.</h2>
+  </div>
+  <div class="notes">
+    <article class="note rv">
+      <p class="eyebrow">Hardware</p>
+      <h3>MT7921 con il driver corretto</h3>
+      <p>Il driver <code>mt7921e</code> di serie inietta i pacchetti a 1 Mbit/s CCK e a 5 GHz il firmware li scarta. <code>scripts/driver.sh</code> ricompila solo il modulo con una patch per la velocità; <code>--rimuovi</code> torna a quello di serie.</p>
+      <p>Da rilanciare dopo ogni aggiornamento del kernel. Non funziona se il kernel accetta solo moduli firmati.</p>
+    </article>
+    <article class="note rv">
+      <p class="eyebrow">iOS 27</p>
+      <h3>Due cose cambiate</h3>
+      <p>Alcuni frame AWDL finiscono con 2 byte di zeri e OWL li rifiutava: c'è una patch in <code>patches/owl-ios27.patch</code>.</p>
+      <p>L'annuncio Bluetooth è passato alla versione 3, con i primi byte del prefisso non più a zero.</p>
+    </article>
+    <article class="note rv">
+      <p class="eyebrow">Limiti</p>
+      <h3>Quello che non dipende da noi</h3>
+      <p>Solo «Tutti per 10 minuti»: «Solo contatti» vuole un'identità firmata da Apple.</p>
+      <p>Apple non supporta niente di tutto questo, quindi un aggiornamento di iOS può romperlo.</p>
+    </article>
+  </div>
+</section>
+
+<section class="sec cta wrap">
+  <div class="rv">
+    <h2 class="h2">Provalo sulla tua scheda.</h2>
+    <p>lindrop è in corso d'opera. Una prova su un'altra scheda Wi-Fi, o un problema trovato, sono la cosa più utile che puoi mandare.</p>
+  </div>
+  <div class="btns rv">
+    <a class="btn pri" href="https://github.com/polpo21/lindrop">Vai al repository
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg>
+    </a>
+    <a class="btn sec" href="https://github.com/polpo21/lindrop/issues">Segnala un problema</a>
+  </div>
+</section>
+</main>
+
+<footer class="wrap">
+  <div class="mark" aria-hidden="true"><span>lindrop</span></div>
+  <div class="foot-row">
+    <span>GPL-3.0-or-later · scritto in Rust</span>
+    <span>Non affiliato ad Apple. AirDrop è un marchio di Apple Inc.</span>
+  </div>
+</footer>
+
+<script>
+(() => {
+  const story = document.getElementById('come');
+  const stage = document.getElementById('stage');
+  const box = stage.parentElement;
+  const caps = [...story.querySelectorAll('.cap')];
+  const rail = [...story.querySelectorAll('.rail button')];
+  const pcts = [...stage.querySelectorAll('.pct')];
+  const SEG = 7;
+  let step = -1, shown = -1, queued = false;
+
+  function fit() {
+    const cs = getComputedStyle(stage);
+    const W = parseFloat(cs.getPropertyValue('--W')), H = parseFloat(cs.getPropertyValue('--H'));
+    const s = Math.min(box.clientWidth / W, box.clientHeight / H, 1.3);
+    stage.style.setProperty('--s', s.toFixed(4));
+  }
+
+  function update() {
+    queued = false;
+    const range = Math.max(1, story.offsetHeight - innerHeight);
+    const p = Math.min(1, Math.max(0, -story.getBoundingClientRect().top / range));
+    const seg = Math.min(SEG - 1e-6, p * SEG);
+    const n = Math.floor(seg), t = seg - n;
+    if (n !== step) {
+      step = n;
+      for (let i = 1; i < SEG; i++) stage.classList.toggle('s' + i, n >= i);
+      caps.forEach((c, i) => c.classList.toggle('on', i === n));
+      rail.forEach((b, i) => {
+        if (i + 1 === n) b.setAttribute('aria-current', 'step'); else b.removeAttribute('aria-current');
+        b.classList.toggle('done', i + 1 < n);
+      });
+    }
+    stage.classList.toggle('tap', n === 4 && t > 0.55);
+    const tp = n < 5 ? 0 : n > 5 ? 1 : Math.min(1, t * 1.2);
+    stage.style.setProperty('--tp', tp.toFixed(3));
+    const pc = Math.round(tp * 100);
+    if (pc !== shown) { shown = pc; pcts.forEach(e => { e.textContent = pc; }); }
+  }
+
+  const req = () => { if (!queued) { queued = true; requestAnimationFrame(update); } };
+  addEventListener('scroll', req, { passive: true });
+  addEventListener('resize', () => { fit(); req(); });
+  if ('ResizeObserver' in window) new ResizeObserver(fit).observe(box);
+  fit(); update();
+
+  const still = matchMedia('(prefers-reduced-motion: reduce)');
+  rail.forEach((b, i) => b.addEventListener('click', () => {
+    const range = story.offsetHeight - innerHeight;
+    const top = story.getBoundingClientRect().top + scrollY + range * ((i + 1.5) / SEG);
+    scrollTo({ top, behavior: still.matches ? 'auto' : 'smooth' });
+  }));
+
+  document.querySelectorAll('[data-copy]').forEach(btn => btn.addEventListener('click', () => {
+    const label = btn.querySelector('.copy-l');
+    const done = txt => { label.textContent = txt; clearTimeout(btn._t); btn._t = setTimeout(() => { label.textContent = 'Copia'; }, 1800); };
+    const select = () => {
+      const r = document.createRange();
+      r.selectNodeContents(document.getElementById(btn.getAttribute('aria-controls')));
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+      done('Selezionato');
+    };
+    try {
+      navigator.clipboard.writeText(btn.dataset.copy).then(() => done('Copiato'), select);
+    } catch (e) { select(); }
+  }));
+})();
+</script>
+</body>
+</html>

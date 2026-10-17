@@ -23,13 +23,14 @@ const ADAPTER: &str = "/org/bluez/hci0";
 /// `05 12 40252267 00000000 03 <hashes> 00`).
 const ADVERT: [u8; 20] = [0x05, 0x12, 0, 0, 0, 0, 0, 0, 0, 0, 0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
-/// The advert bytes: `LINDROP_BLE` (40 hex digits, starting 0512) for
-/// experiments, else [`ADVERT`].
+/// The advert bytes: `LINDROP_BLE` (hex, starting with the 0x05 TLV; more
+/// Continuity TLVs such as Nearby Info 0x10 may follow) for experiments, else
+/// [`ADVERT`].
 fn advert() -> Vec<u8> {
     let custom = std::env::var("LINDROP_BLE").ok().and_then(|h| {
         let b: Option<Vec<u8>> =
             (0..h.len()).step_by(2).map(|i| h.get(i..i + 2).and_then(|x| u8::from_str_radix(x, 16).ok())).collect();
-        b.filter(|b| b.len() == 20 && b[0] == 0x05 && b[1] == 0x12)
+        b.filter(|b| (20..=27).contains(&b.len()) && b[0] == 0x05 && b[1] == 0x12)
     });
     custom.unwrap_or_else(|| ADVERT.to_vec())
 }

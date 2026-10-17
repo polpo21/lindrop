@@ -1,0 +1,12 @@
+[Unit]
+Description=lindrop: ricezione AirDrop dall'iPhone
+# Started and stopped from the bar (Noctalia plugin integrazioni/noctalia/lindrop).
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/local/bin/lindrop ricevi --minuti 0
+# SIGINT is lindrop's own Ctrl+C path: it withdraws the mDNS record and gives
+# the radio back before exiting.
+KillSignal=SIGINT
+TimeoutStopSec=15
+Restart=no

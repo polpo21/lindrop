@@ -1,0 +1,31 @@
+# lindrop - AirDrop from the bar. A headless [[service]] polls the user unit
+# lindrop-ricevi.service and publishes "status"; the bar [[widget]] and the
+# control-center [[shortcut]] mirror it and drive the unit through "command".
+#
+# Widget: left click = receive on/off, right click = open the received files.
+
+id = "polpo/lindrop"
+name = "lindrop"
+version = "0.1.0"
+plugin_api = 24
+author = "polpo"
+license = "GPL-3.0-or-later"
+dependencies = ["lindrop"]
+tags = ["airdrop", "iphone", "sharing"]
+icon = "access-point"
+description = "AirDrop tra iPhone e Linux: accendi e spegni la ricezione dalla barra."
+
+[[service]]
+id = "service"
+entry = "servizio.luau"
+
+[[widget]]
+id = "airdrop"
+entry = "widget.luau"
+
+  [widget.actions]
+  middle = "none"
+
+[[shortcut]]
+id = "ricezione"
+entry = "riquadro.luau"

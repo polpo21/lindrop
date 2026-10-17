@@ -43,7 +43,7 @@ struct Cli {
 enum Cmd {
     /// Diventa visibile all'iPhone e ricevi file
     Ricevi {
-        /// Minuti di visibilità (predefinito dal config, 10)
+        /// Minuti di visibilità (predefinito dal config, 10; 0 = senza limite)
         #[arg(short, long)]
         minuti: Option<u64>,
     },
@@ -183,10 +183,15 @@ fn ricevi(minuti: Option<u64>) -> Result<()> {
     std::thread::spawn(move || rx.serve_on(listener));
     awdl.mdns.announce(&ident.service_id, &host_name(), awdl.addr, airdrop::PORT);
 
-    say!("Visibile come «{}» per {minuti} minuti. Ctrl+C per smettere.", cfg.nome);
+    if minuti == 0 {
+        say!("Visibile come «{}» finché non lo spegni.", cfg.nome);
+    } else {
+        say!("Visibile come «{}» per {minuti} minuti. Ctrl+C per smettere.", cfg.nome);
+    }
     say!("Sull'iPhone: Centro di Controllo → AirDrop → «Tutti per 10 minuti», poi Condividi.");
-    let end = Instant::now() + Duration::from_secs(minuti * 60);
-    while Instant::now() < end {
+    // 0 = no limit (the bar's switch, lindrop-ricevi.service).
+    let end = (minuti > 0).then(|| Instant::now() + Duration::from_secs(minuti * 60));
+    while end.is_none_or(|e| Instant::now() < e) {
         if let Some(why) = awdl.should_stop() {
             say!("\n{why}");
             break;
@@ -227,8 +232,9 @@ fn invia(files: Vec<PathBuf>) -> Result<()> {
         if let Some((p, name)) = found.iter().find_map(|p| sender.discover(p.addr).ok().flatten().map(|n| (p.clone(), n))) {
             break (p, name);
         }
-        if t.elapsed() > Duration::from_secs(120) {
-            bail!("nessun iPhone trovato in 2 minuti");
+        let limit = std::env::var("LINDROP_CERCA_S").ok().and_then(|v| v.parse().ok()).unwrap_or(120);
+        if t.elapsed() > Duration::from_secs(limit) {
+            bail!("nessun iPhone trovato in {limit} secondi");
         }
         std::thread::sleep(Duration::from_millis(500));
     };

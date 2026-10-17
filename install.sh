@@ -32,6 +32,16 @@ sudo systemctl enable --now lindrop-radio.socket
 # A running service keeps the old binary: restart it if idle.
 sudo systemctl try-restart lindrop-radio.service
 
+step "Barra (Noctalia) e servizio utente"
+# User-level, no sudo: the unit the bar switch starts and stops, and the plugin.
+mkdir -p "$HOME/.config/systemd/user" "$HOME/.local/share/noctalia/plugins"
+ln -sfn "$PWD/packaging/lindrop-ricevi.service" "$HOME/.config/systemd/user/lindrop-ricevi.service"
+systemctl --user daemon-reload
+ln -sfn "$PWD/integrazioni/noctalia/lindrop" "$HOME/.local/share/noctalia/plugins/lindrop"
+if command -v noctalia >/dev/null && noctalia msg plugins list >/dev/null 2>&1; then
+  noctalia msg plugins enable polpo/lindrop >/dev/null && echo "  plugin polpo/lindrop attivo: aggiungi \"polpo/lindrop:airdrop\" alla barra"
+fi
+
 step "Fatto"
 echo "  lindrop ricevi        per ricevere dall'iPhone"
 echo "  lindrop invia FILE    per inviare all'iPhone"
