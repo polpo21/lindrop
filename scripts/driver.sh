@@ -18,6 +18,12 @@ KBUILD=/lib/modules/$KVER/build
 reload() {
   echo "Ricarico il driver (il Wi-Fi cade per qualche secondo)…"
   sudo modprobe -r mt7921e && sudo modprobe mt7921e
+  # The card comes back as wlan0 and udev renames it; NetworkManager's iwd
+  # backend loses track of it in that race. Restarting iwd resyncs both.
+  if systemctl is-active --quiet iwd; then
+    sleep 2
+    sudo systemctl restart iwd
+  fi
 }
 
 if [ "${1:-}" = "--rimuovi" ]; then
