@@ -22,7 +22,7 @@ pub struct Desktop {
 impl Ui for Desktop {
     fn ask(&self, a: &Ask) -> bool {
         let who = if a.sender.is_empty() { "Un iPhone" } else { a.sender.as_str() };
-        println!("{who} vuole inviarti {}", a.summary());
+        say!("{who} vuole inviarti {}", a.summary());
         if !self.ask {
             return true;
         }
@@ -39,14 +39,14 @@ impl Ui for Desktop {
             Ok(h) => h,
             Err(e) => {
                 // No notification server: fail closed.
-                eprintln!("notifica non mostrata ({e}): rifiuto");
+                say_err!("notifica non mostrata ({e}): rifiuto");
                 return false;
             }
         };
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || handle.wait_for_action(|act| { let _ = tx.send(act == "accetta"); }));
         let yes = rx.recv_timeout(ASK_TIMEOUT + Duration::from_secs(5)).unwrap_or(false);
-        println!("{}", if yes { "accettato" } else { "rifiutato" });
+        say!("{}", if yes { "accettato" } else { "rifiutato" });
         yes
     }
 
@@ -57,9 +57,9 @@ impl Ui for Desktop {
             many => format!("{} file", many.len()),
         };
         let speed = if secs > 0.0 { format!(", {}/s", human((size as f64 / secs) as u64)) } else { String::new() };
-        println!("ricevuto {what} da {} ({}{speed})", a.sender, human(size));
+        say!("ricevuto {what} da {} ({}{speed})", a.sender, human(size));
         for p in paths {
-            println!("  {}", p.display());
+            say!("  {}", p.display());
         }
         let dest = self.dest.clone();
         let first = paths.first().cloned();
@@ -87,7 +87,7 @@ impl Ui for Desktop {
     }
 
     fn failed(&self, what: &str) {
-        eprintln!("errore: {what}");
+        say_err!("errore: {what}");
         let _ = Notification::new().appname(APP).summary("AirDrop non riuscito").body(what).icon("dialog-error").show();
     }
 }

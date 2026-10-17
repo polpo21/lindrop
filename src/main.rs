@@ -1,5 +1,14 @@
 //! lindrop: AirDrop between iPhone and Linux.
 
+/// println!/eprintln! that do not panic when the reader went away (Ctrl+C
+/// in a pipe kills `tee` first, and a panic here would abort the teardown).
+macro_rules! say {
+    ($($t:tt)*) => {{ use std::io::Write as _; let _ = writeln!(std::io::stdout(), $($t)*); }};
+}
+macro_rules! say_err {
+    ($($t:tt)*) => {{ use std::io::Write as _; let _ = writeln!(std::io::stderr(), $($t)*); }};
+}
+
 mod airdrop;
 mod archive;
 mod config;
@@ -68,22 +77,22 @@ fn main() {
         Some(Cmd::Radio) => radio::serve(),
     };
     if let Err(e) = r {
-        eprintln!("errore: {e:#}");
+        say_err!("errore: {e:#}");
         std::process::exit(1);
     }
 }
 
 fn stato() -> Result<()> {
     let cfg = Config::load()?;
-    println!("lindrop {}", env!("CARGO_PKG_VERSION"));
-    println!("  nome       {}", cfg.nome);
-    println!("  cartella   {}", cfg.cartella.display());
+    say!("lindrop {}", env!("CARGO_PKG_VERSION"));
+    say!("  nome       {}", cfg.nome);
+    say!("  cartella   {}", cfg.cartella.display());
     let canale = if cfg.canale == 0 { "automatico".to_string() } else { cfg.canale.to_string() };
-    println!("  modalità   {:?}, canale {canale}", cfg.modalita);
+    say!("  modalità   {:?}, canale {canale}", cfg.modalita);
     let radio = std::path::Path::new(radio::SOCKET).exists();
-    println!("  radio      {}", if radio { "servizio pronto" } else { "servizio non installato" });
-    println!("\n  lindrop ricevi          diventa visibile all'iPhone");
-    println!("  lindrop invia <file>    invia a un iPhone vicino");
+    say!("  radio      {}", if radio { "servizio pronto" } else { "servizio non installato" });
+    say!("\n  lindrop ricevi          diventa visibile all'iPhone");
+    say!("  lindrop invia <file>    invia a un iPhone vicino");
     Ok(())
 }
 
@@ -105,9 +114,9 @@ impl Awdl {
             libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
             libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
         }
-        println!("Accendo AWDL (il Wi-Fi si spegne finché sei visibile)…");
+        say!("Accendo AWDL (il Wi-Fi si spegne finché sei visibile)…");
         let mut link = radio::Link::up(cfg.canale, &cfg.paese)?;
-        println!("AWDL sul canale {}", link.canale);
+        say!("AWDL sul canale {}", link.canale);
         let dropped = link.dropped();
         let t = Instant::now();
         let (addr, _) = loop {
@@ -143,7 +152,7 @@ impl Drop for Awdl {
         if let Some(l) = self.link.take() {
             l.close();
         }
-        println!("AWDL spento, il Wi-Fi torna da solo.");
+        say!("AWDL spento, il Wi-Fi torna da solo.");
     }
 }
 
@@ -166,12 +175,12 @@ fn ricevi(minuti: Option<u64>) -> Result<()> {
     std::thread::spawn(move || rx.serve_on(listener));
     awdl.mdns.announce(&ident.service_id, &host_name(), awdl.addr, airdrop::PORT);
 
-    println!("Visibile come «{}» per {minuti} minuti. Ctrl+C per smettere.", cfg.nome);
-    println!("Sull'iPhone: Centro di Controllo → AirDrop → «Tutti per 10 minuti», poi Condividi.");
+    say!("Visibile come «{}» per {minuti} minuti. Ctrl+C per smettere.", cfg.nome);
+    say!("Sull'iPhone: Centro di Controllo → AirDrop → «Tutti per 10 minuti», poi Condividi.");
     let end = Instant::now() + Duration::from_secs(minuti * 60);
     while Instant::now() < end {
         if let Some(why) = awdl.should_stop() {
-            println!("\n{why}");
+            say!("\n{why}");
             break;
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -190,7 +199,7 @@ fn invia(files: Vec<PathBuf>) -> Result<()> {
     let sender = send::Sender::new(&ident, &cfg.nome)?;
     let awdl = Awdl::up(&cfg)?;
     awdl.mdns.browse(true);
-    println!("Cerco iPhone… (sull'iPhone: AirDrop su «Tutti per 10 minuti», schermo acceso)");
+    say!("Cerco iPhone… (sull'iPhone: AirDrop su «Tutti per 10 minuti», schermo acceso)");
 
     let t = Instant::now();
     let peer = loop {
@@ -208,18 +217,19 @@ fn invia(files: Vec<PathBuf>) -> Result<()> {
         std::thread::sleep(Duration::from_millis(500));
     };
     let (p, name) = peer;
-    println!("Trovato «{name}». Conferma sull'iPhone…");
+    say!("Trovato «{name}». Conferma sull'iPhone…");
     let total: u64 = files.iter().filter_map(|f| f.metadata().ok()).map(|m| m.len()).sum();
     let start = Instant::now();
     let out = sender.send(p.addr, &files, &|sent, tot| {
-        print!("\r  {:>3}%  {} di {}", sent * 100 / tot.max(1), airdrop::human(sent), airdrop::human(tot));
-        let _ = std::io::stdout().flush();
+        let mut out = std::io::stdout();
+        let _ = write!(out, "\r  {:>3}%  {} di {}", sent * 100 / tot.max(1), airdrop::human(sent), airdrop::human(tot));
+        let _ = out.flush();
     })?;
-    println!();
+    say!();
     match out {
         send::Outcome::Sent => {
             let secs = start.elapsed().as_secs_f64();
-            println!("Inviato a «{name}» ({}, {:.0} s)", airdrop::human(total), secs);
+            say!("Inviato a «{name}» ({}, {:.0} s)", airdrop::human(total), secs);
             Ok(())
         }
         send::Outcome::Declined => bail!("«{name}» ha rifiutato"),

@@ -69,7 +69,12 @@ impl Ask {
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(Value::as_string).map(str::to_string).collect())
             .unwrap_or_default();
-        Ok(Self { transfer_id: s("TransferID"), sender: s("SenderComputerName"), files, items })
+        // A string, or {"id": "<UUID>"} as Apple's own senders put it.
+        let transfer_id = match d.get("TransferID") {
+            Some(Value::Dictionary(t)) => t.get("id").and_then(Value::as_string).unwrap_or_default().to_string(),
+            _ => s("TransferID"),
+        };
+        Ok(Self { transfer_id, sender: s("SenderComputerName"), files, items })
     }
 
     pub fn is_link(&self) -> bool {

@@ -3,8 +3,10 @@
 **AirDrop tra iPhone e Linux, scritto da zero in Rust.**
 *AirDrop between iPhone and Linux, written from scratch in Rust. Work in progress.*
 
-> Stato: fase 1 in costruzione. Protocollo, mDNS e servizio radio scritti e
-> provati in locale; manca la prova con un iPhone vero.
+> Stato: fase 1. Prima prova con un iPhone vero (iOS 27, 17/10/2026): l'iPhone
+> trova il PC, chiede il permesso e inizia a inviare; col driver `mt7921e` di
+> serie il collegamento perde troppi pacchetti e il trasferimento si ferma.
+> La correzione del driver è in `driver/` (da provare).
 
 ## Perché
 
@@ -63,6 +65,15 @@ minuti = 10
 ```
 
 ## Hardware
+
+### Driver MT7921 (consigliato)
+
+Il driver `mt7921e` di serie manda i pacchetti iniettati a 1 Mbit/s CCK, che a
+5 GHz il firmware scarta: l'iPhone ci sente ma non riceve le nostre risposte.
+`scripts/driver.sh` ricompila solo `mt7921e.ko` con `driver/mt7921e-rate.patch`
+per il kernel in uso e lo installa in `/lib/modules/<kernel>/updates/lindrop/`
+(`--rimuovi` torna a quello di serie). Dopo un aggiornamento del kernel va
+rilanciato. Non funziona se il kernel accetta solo moduli firmati.
 
 Il primo obiettivo è la scheda **MediaTek MT7921** (driver `mt7921e`). Serve una
 scheda che supporti il monitor mode con iniezione di pacchetti.

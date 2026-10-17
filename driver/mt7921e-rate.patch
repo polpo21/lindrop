@@ -1,0 +1,78 @@
+# lindrop: honour the rate injected through radiotap on mt7921e.
+# Stock mt7921e sends injected unicast data at CCK 1M, which the firmware
+# drops on 5 GHz, so AWDL replies (TCP ACKs, TLS) never reach the phone.
+# Same licence as the driver (BSD-3-Clause-Clear). Applies to Linux 7.2.9.
+--- a/drivers/net/wireless/mediatek/mt76/mt7921/pci_mac.c	2026-10-17 13:52:17.972786111 +0200
++++ b/drivers/net/wireless/mediatek/mt76/mt7921/pci_mac.c	2026-10-17 13:52:17.994887266 +0200
+@@ -5,6 +5,38 @@
+ #include "../dma.h"
+ #include "../mt76_connac2_mac.h"
+ 
++/* lindrop: frames injected through a monitor interface (AWDL) carry the
++ * rate userspace asked for in radiotap. Without this, injected unicast data
++ * goes out at the default rate of the global wcid, CCK 1M, which the firmware
++ * drops on 5 GHz. Only legacy rates; read before mt76_tx_status_skb_add(),
++ * which clears info->control.flags.
++ */
++static bool mt7921e_injected_rate(struct mt76_dev *mdev,
++				  struct ieee80211_tx_info *info, u16 *rate)
++{
++	struct ieee80211_supported_band *sband;
++	struct ieee80211_tx_rate *r = &info->control.rates[0];
++	u16 hw;
++
++	if (!(info->flags & IEEE80211_TX_CTL_INJECTED) ||
++	    (info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP) ||
++	    !(info->control.flags & IEEE80211_TX_CTRL_RATE_INJECT) ||
++	    (r->flags & (IEEE80211_TX_RC_MCS | IEEE80211_TX_RC_VHT_MCS)) ||
++	    info->band >= NUM_NL80211_BANDS)
++		return false;
++
++	sband = mdev->phy.hw->wiphy->bands[info->band];
++	if (!sband || r->idx < 0 || r->idx >= sband->n_bitrates)
++		return false;
++
++	hw = (r->flags & IEEE80211_TX_RC_USE_SHORT_PREAMBLE) ?
++	     sband->bitrates[r->idx].hw_value_short :
++	     sband->bitrates[r->idx].hw_value;
++	*rate = FIELD_PREP(MT_TX_RATE_MODE, hw >> 8) |
++		FIELD_PREP(MT_TX_RATE_IDX, hw & 0xff);
++	return true;
++}
++
+ int mt7921e_tx_prepare_skb(struct mt76_dev *mdev, void *txwi_ptr,
+ 			   enum mt76_txq_id qid, struct mt76_wcid *wcid,
+ 			   struct ieee80211_sta *sta,
+@@ -17,6 +49,9 @@
+ 	struct mt76_txwi_cache *t;
+ 	int id, pid;
+ 	u8 *txwi = (u8 *)txwi_ptr;
++	bool minrate = info->flags & IEEE80211_TX_CTL_USE_MINRATE;
++	u16 inj_rate = 0;
++	bool inj;
+ 
+ 	if (unlikely(tx_info->skb->len <= ETH_HLEN))
+ 		return -EINVAL;
+@@ -40,9 +75,22 @@
+ 		}
+ 	}
+ 
++	inj = mt7921e_injected_rate(mdev, info, &inj_rate);
+ 	pid = mt76_tx_status_skb_add(mdev, wcid, tx_info->skb);
++	/* USE_MINRATE takes the common fixed-rate path (FIX_RATE, fixed BW,
++	 * BA disabled); the rate it picks is replaced right after. */
++	if (inj)
++		info->flags |= IEEE80211_TX_CTL_USE_MINRATE;
+ 	mt76_connac2_mac_write_txwi(mdev, txwi_ptr, tx_info->skb, wcid, key,
+ 				    pid, qid, 0);
++	if (inj) {
++		__le32 *txd = txwi_ptr;
++
++		if (!minrate)
++			info->flags &= ~IEEE80211_TX_CTL_USE_MINRATE;
++		txd[6] &= ~cpu_to_le32(MT_TXD6_TX_RATE);
++		txd[6] |= cpu_to_le32(FIELD_PREP(MT_TXD6_TX_RATE, inj_rate));
++	}
+ 
+ 	txp = (struct mt76_connac_hw_txp *)(txwi + MT_TXD_SIZE);
+ 	memset(txp, 0, sizeof(struct mt76_connac_hw_txp));
