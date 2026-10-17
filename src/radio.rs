@@ -26,6 +26,8 @@ use serde::{Deserialize, Serialize};
 pub const SOCKET: &str = "/run/lindrop/radio.sock";
 const STATE: &str = "/run/lindrop/sessione.json";
 const OWL_LOG: &str = "/run/lindrop/owl.log";
+/// Last AWDL channel used, for automatic mode when the station is down.
+const LAST: &str = "/run/lindrop/canale";
 const USERS: &str = "/etc/lindrop/utenti";
 /// Root-owned AWDL daemon (phase 1: OWL). Never a user-writable path.
 const OWL: &[&str] = &["/usr/lib/lindrop/owl", "/usr/local/lib/lindrop/owl"];
@@ -148,10 +150,16 @@ impl Session {
     fn build(&mut self, card: &Card, canale: u8, paese: &str, owl: &Path) -> Result<()> {
         // Automatic: the channel the station is on now. A phone on the same
         // Wi-Fi spends most of its AWDL slots, multicast slot 0 included, there.
+        // Not associated (Wi-Fi still reconnecting after the last session):
+        // the channel that worked last time is a better guess than 149.
         let canale = match canale {
-            0 => station_channel(&card.iface).filter(|c| mhz(*c).is_some()).unwrap_or(149),
+            0 => station_channel(&card.iface)
+                .or_else(|| fs::read_to_string(LAST).ok().and_then(|s| s.trim().parse().ok()))
+                .filter(|c| mhz(*c).is_some())
+                .unwrap_or(149),
             c => c,
         };
+        let _ = fs::write(LAST, canale.to_string());
         let freq = mhz(canale).expect("validated");
         self.canale = canale;
         tracing::info!("canale AWDL {canale} ({freq} MHz)");
