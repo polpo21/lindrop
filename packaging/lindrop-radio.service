@@ -9,7 +9,8 @@ ExecStart=/usr/local/bin/lindrop radio
 # Stopping tears the session down and gives the Wi-Fi back.
 KillSignal=SIGTERM
 TimeoutStopSec=20
-Environment=LINDROP_LOG=lindrop=info
+# Debug while phase 1 is being tested on real hardware.
+Environment=LINDROP_LOG=lindrop=debug
 NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
