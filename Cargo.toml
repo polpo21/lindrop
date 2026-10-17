@@ -9,22 +9,22 @@ repository = "https://github.com/polpo21/lindrop"
 
 [dependencies]
 anyhow = "1.0.104"
+base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive"] }
 flate2 = "1.1.10"
 libc = "0.2.191"
+notify-rust = "4.17.0"
 plist = "1.10.1"
-rcgen = "0.14.10"
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
 rustls = "0.23.46"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 simple-dns = "0.12.0"
-socket2 = "0.6.5"
+socket2 = { version = "0.6.5", features = ["all"] }
+tempfile = "3.27.0"
 toml = "1.1.8"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-
-[dev-dependencies]
-tempfile = "3.27.0"
 
 [profile.release]
 lto = true

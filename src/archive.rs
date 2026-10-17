@@ -162,7 +162,10 @@ pub fn extract(inp: impl Read, dest: &Path) -> Result<Extracted> {
     let mut done = Extracted::default();
     while let Some((e, fmt)) = r.next()? {
         let Some(rel) = safe_path(&e.name) else {
-            tracing::warn!("archivio: salto il nome non sicuro {:?}", e.name);
+            // Apple's archives open with a "." entry for the root itself.
+            if e.name.trim_end_matches('/') != "." {
+                tracing::warn!("archivio: salto il nome non sicuro {:?}", e.name);
+            }
             r.data(e.size, fmt, None)?;
             continue;
         };

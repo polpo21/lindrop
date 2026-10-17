@@ -15,8 +15,8 @@ use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 
 const STORED: u32 = 0x8000_0000;
-/// Uncompressed bytes per block when we send.
-const BLOCK: usize = 1 << 20;
+/// Uncompressed bytes per block when we send, as Apple does.
+const BLOCK: usize = 128 << 10;
 
 enum Block<R: Read> {
     Stored(io::Take<R>),
