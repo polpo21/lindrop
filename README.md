@@ -82,7 +82,7 @@ scheda che supporti il monitor mode con iniezione di pacchetti.
 ## Cosa abbiamo scoperto su iOS 27
 
 - Alcuni frame AWDL finiscono con 2 byte di zeri: OWL li rifiutava
-  (`patches/owl-ios27.patch`).
+  (`patches/owl-1-ios27.patch`).
 - L'annuncio Bluetooth AirDrop è alla **versione 3** (iOS 26: versione 1), con
   i primi byte del prefisso non più a zero. Un iPhone con iOS 27 ignora
   l'annuncio versione 1 e non si mostra a chi vuole inviargli qualcosa:

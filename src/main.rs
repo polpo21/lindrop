@@ -227,8 +227,8 @@ fn invia(files: Vec<PathBuf>) -> Result<()> {
         if let Some((p, name)) = found.iter().find_map(|p| sender.discover(p.addr).ok().flatten().map(|n| (p.clone(), n))) {
             break (p, name);
         }
-        if t.elapsed() > Duration::from_secs(60) {
-            bail!("nessun iPhone trovato in 60 secondi");
+        if t.elapsed() > Duration::from_secs(120) {
+            bail!("nessun iPhone trovato in 2 minuti");
         }
         std::thread::sleep(Duration::from_millis(500));
     };
@@ -236,7 +236,7 @@ fn invia(files: Vec<PathBuf>) -> Result<()> {
     say!("Trovato «{name}». Conferma sull'iPhone…");
     let total: u64 = files.iter().filter_map(|f| f.metadata().ok()).map(|m| m.len()).sum();
     let start = Instant::now();
-    let out = sender.send(p.addr, &files, &|sent, tot| {
+    let out = sender.send(p.addr, &files, &STOP, &|sent, tot| {
         let mut out = std::io::stdout();
         let _ = write!(out, "\r  {:>3}%  {} di {}", sent * 100 / tot.max(1), airdrop::human(sent), airdrop::human(tot));
         let _ = out.flush();

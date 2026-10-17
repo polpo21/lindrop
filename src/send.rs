@@ -10,6 +10,7 @@ use std::io::{self, BufReader, Read, Seek, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -24,6 +25,8 @@ const CONNECT: Duration = Duration::from_secs(10);
 /// acknowledging: give up instead of hanging on TCP retransmits.
 const STALL: Duration = Duration::from_secs(30);
 const SLICE: usize = 64 << 10;
+/// How long the person at the phone has to tap Accept.
+const ASK_WAIT: Duration = Duration::from_secs(120);
 
 pub enum Outcome {
     Sent,
@@ -73,7 +76,7 @@ impl Sender {
     }
 
     /// Asks, waits for the person at the phone, then uploads.
-    pub fn send(&self, addr: SocketAddr, files: &[PathBuf], progress: &dyn Fn(u64, u64)) -> Result<Outcome> {
+    pub fn send(&self, addr: SocketAddr, files: &[PathBuf], cancel: &AtomicBool, progress: &dyn Fn(u64, u64)) -> Result<Outcome> {
         if files.is_empty() {
             bail!("nessun file da inviare");
         }
@@ -110,9 +113,9 @@ impl Sender {
         body.rewind()?;
 
         let mut s = self.connect(addr)?;
-        // A person is deciding: no timeout on the answer to /Ask.
+        // A person is deciding: wait up to ASK_WAIT, interruptible.
         s.get_ref().sock.set_read_timeout(None)?;
-        let (code, _) = post_plist(&mut s, "/Ask", ask, "keep-alive")?;
+        let (code, _) = post_plist_wait(&mut s, "/Ask", ask, "keep-alive", Some((cancel, ASK_WAIT)))?;
         match code {
             200 => {}
             403 | 401 => return Ok(Outcome::Declined),
@@ -165,6 +168,18 @@ fn stalled(e: io::Error) -> anyhow::Error {
 
 /// POSTs a binary plist the way iOS does (chunked, no Content-Type); returns status and body.
 fn post_plist(s: &mut Tls, path: &str, d: Dictionary, connection: &str) -> Result<(u16, Vec<u8>)> {
+    post_plist_wait(s, path, d, connection, None)
+}
+
+/// As [`post_plist`]; with `wait`, polls for the answer once a second until
+/// `wait.0` is set or `wait.1` elapses (a person is deciding on the phone).
+fn post_plist_wait(
+    s: &mut Tls,
+    path: &str,
+    d: Dictionary,
+    connection: &str,
+    wait: Option<(&AtomicBool, Duration)>,
+) -> Result<(u16, Vec<u8>)> {
     let mut body = Vec::new();
     Value::Dictionary(d).to_writer_binary(&mut body)?;
     let w = s.get_mut();
@@ -177,9 +192,30 @@ fn post_plist(s: &mut Tls, path: &str, d: Dictionary, connection: &str) -> Resul
     let mut c = http::ChunkedWriter::new(&mut *w);
     c.write_all(&body)?;
     c.finish()?;
+    if let Some((cancel, limit)) = wait {
+        let t = std::time::Instant::now();
+        while !readable(s, Duration::from_secs(1)) {
+            if cancel.load(Ordering::SeqCst) {
+                bail!("interrotto");
+            }
+            if t.elapsed() > limit {
+                bail!("nessuna risposta dall'iPhone in {} s", limit.as_secs());
+            }
+        }
+    }
     let head = http::read_head(s)?.with_context(|| format!("{path}: connessione chiusa senza risposta"))?;
     let body = http::read_small(&head, s, 4 << 20)?;
     Ok((head.status(), body))
+}
+
+/// Bytes are waiting, in rustls or on the socket.
+fn readable(s: &Tls, timeout: Duration) -> bool {
+    use std::os::fd::AsRawFd;
+    if !s.buffer().is_empty() {
+        return true;
+    }
+    let mut p = libc::pollfd { fd: s.get_ref().sock.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+    unsafe { libc::poll(&mut p, 1, timeout.as_millis() as i32) > 0 }
 }
 
 /// dvzip(cpio) of the files, as Apple lays it out: a `.` directory, then `./name`.
@@ -299,7 +335,7 @@ mod tests {
         // A file with the same name already there: the new one gets "(1)".
         std::fs::write(dir.path().join("Scaricati/note.txt"), "vecchio").unwrap();
         let last = Mutex::new((0, 0));
-        let out = tx.send(addr, &[a, b], &|s, t| *last.lock().unwrap() = (s, t)).unwrap();
+        let out = tx.send(addr, &[a, b], &AtomicBool::new(false), &|s, t| *last.lock().unwrap() = (s, t)).unwrap();
         assert!(matches!(out, Outcome::Sent));
         let (s, t) = *last.lock().unwrap();
         assert_eq!(s, t);
@@ -317,7 +353,7 @@ mod tests {
         let (dir, ui, tx, addr) = setup(false);
         let a = dir.path().join("x.txt");
         std::fs::write(&a, "x").unwrap();
-        assert!(matches!(tx.send(addr, &[a], &|_, _| {}).unwrap(), Outcome::Declined));
+        assert!(matches!(tx.send(addr, &[a], &AtomicBool::new(false), &|_, _| {}).unwrap(), Outcome::Declined));
         assert!(ui.asked.load(Ordering::SeqCst));
         assert!(ui.got.lock().unwrap().is_empty());
     }

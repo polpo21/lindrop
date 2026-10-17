@@ -34,6 +34,10 @@ fn advert() -> Vec<u8> {
     custom.unwrap_or_else(|| ADVERT.to_vec())
 }
 
+fn interval_ms() -> u32 {
+    std::env::var("LINDROP_BLE_MS").ok().and_then(|v| v.parse().ok()).filter(|v| (20..=10240).contains(v)).unwrap_or(30)
+}
+
 struct Advert;
 
 #[zbus::interface(name = "org.bluez.LEAdvertisement1")]
@@ -42,9 +46,28 @@ impl Advert {
         tracing::debug!("BlueZ ha rilasciato l'annuncio BLE");
     }
 
+    /// Connectable: an iOS 27 iPhone on its home screen ignores a
+    /// non-connectable ("broadcast") AirDrop advert, and only answers one
+    /// while its share sheet is open (17/10/2026). `LINDROP_BLE_TYPE=broadcast`
+    /// to compare.
     #[zbus(property, name = "Type")]
     fn kind(&self) -> String {
-        "broadcast".into()
+        match std::env::var("LINDROP_BLE_TYPE").as_deref() {
+            Ok("broadcast") => "broadcast".into(),
+            _ => "peripheral".into(),
+        }
+    }
+
+    /// Advertising interval in ms (`LINDROP_BLE_MS`, default 30). BlueZ only
+    /// honours it with `Experimental = true` in main.conf; otherwise ignored.
+    #[zbus(property)]
+    fn min_interval(&self) -> u32 {
+        interval_ms()
+    }
+
+    #[zbus(property)]
+    fn max_interval(&self) -> u32 {
+        interval_ms()
     }
 
     #[zbus(property)]

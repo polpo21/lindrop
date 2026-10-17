@@ -1,0 +1,82 @@
+# OWL + lindrop: keep peers through quiet spells
+#  - peers time out after 15 s of silence instead of 2 (-T SECONDS to change):
+#    an iPhone showing an AirDrop prompt on its home screen goes quiet, and
+#    dropping it killed the TCP connection the answer was coming on
+#  - data frames count as a sign of life, not only action frames
+diff --git a/daemon/owl.c b/daemon/owl.c
+index a3a6250..9dd4302 100644
+--- a/daemon/owl.c
++++ b/daemon/owl.c
+@@ -94,6 +94,7 @@ int main(int argc, char *argv[]) {
+ 	int no_monitor_mode = 0;
+ 	enum awdl_chanseq_strategy strategy = AWDL_CHANSEQ_VERBATIM;
+ 	int widen_max = 4;
++	int peer_timeout_s = 0;
+ 
+ 	char wlan[PATH_MAX] = "";
+ 	char host[IFNAMSIZ] = DEFAULT_AWDL_DEVICE;
+@@ -102,7 +103,7 @@ int main(int argc, char *argv[]) {
+ 
+ 	struct daemon_state state;
+ 
+-	while ((c = getopt(argc, argv, "Dc:dvi:h:a:t:fNS:W:R:A")) != -1) {
++	while ((c = getopt(argc, argv, "Dc:dvi:h:a:t:fNS:W:R:AT:")) != -1) {
+ 		switch (c) {
+ 			case 'S':
+ 				/* How to derive our channel sequence from a peer's. Exposed so a
+@@ -166,6 +167,14 @@ int main(int argc, char *argv[]) {
+ 			case 'A':
+ 				awdl_set_addba_accept(1);
+ 				break;
++			case 'T':
++				/* seconds of silence before a peer is dropped */
++				peer_timeout_s = atoi(optarg);
++				if (peer_timeout_s < 1 || peer_timeout_s > 600) {
++					log_error("-T takes 1..600 (seconds)");
++					return EXIT_FAILURE;
++				}
++				break;
+ 			case '?':
+ 				if (optopt == 'i')
+ 					fprintf(stderr, "Option -%c needs to specify a wireless interface.\n", optopt);
+@@ -243,6 +252,8 @@ int main(int argc, char *argv[]) {
+ 		return EXIT_FAILURE;
+ 	}
+ 	state.awdl_state.filter_rssi = filter_rssi;
++	if (peer_timeout_s)
++		state.awdl_state.peers.timeout = (uint64_t) peer_timeout_s * 1000000;
+ 	state.awdl_state.channel.strategy = strategy;
+ 	state.awdl_state.channel.widen_max = widen_max;
+ 	log_info("channel sequence strategy: %s",
+diff --git a/src/peers.c b/src/peers.c
+index 2202de8..3c14fc6 100644
+--- a/src/peers.c
++++ b/src/peers.c
+@@ -29,7 +29,8 @@
+  * documented. They are consumed as us by awdl_clean_peers() (cutoff against
+  * clock_time_us()) and by usec_to_sec() when arming the cleanup timer.
+  * Effective policy: evict peers unheard for 2 s, swept once per second. */
+-#define PEERS_DEFAULT_TIMEOUT        2000000 /* in us (2 s) */
++#define PEERS_DEFAULT_TIMEOUT        15000000 /* in us (15 s): an iPhone showing an
++                                                 * AirDrop prompt goes quiet for seconds */
+ #define PEERS_DEFAULT_CLEAN_INTERVAL 1000000 /* in us (1 s) */
+ 
+ void awdl_peer_state_init(struct awdl_peer_state *state) {
+diff --git a/src/rx.c b/src/rx.c
+index 326742d..fd1a679 100644
+--- a/src/rx.c
++++ b/src/rx.c
+@@ -381,8 +381,12 @@ int awdl_rx_data(const struct buf *frame, struct buf ***out, const struct ether_
+ 	log_trace("awdl_data: receive from %s", ether_ntoa(src));
+ 	state->stats.rx_data++;
+ 
+-	if (awdl_peer_get(state->peers.peers, src, NULL) != PEERS_OK)
++	struct awdl_peer *peer;
++	if (awdl_peer_get(state->peers.peers, src, &peer) != PEERS_OK)
+ 		return RX_IGNORE_PEER;
++	/* Data is a sign of life too: a peer mid-transfer may send few action
++	 * frames, and dropping it kills the TCP connection under it. */
++	peer->last_update = clock_time_us();
+ 
+ 	if (!awdl_valid_llc_header(frame))
+ 		return RX_UNEXPECTED_FORMAT;
