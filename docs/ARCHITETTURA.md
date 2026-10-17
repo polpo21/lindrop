@@ -27,10 +27,13 @@
 
 | Modalità | Wi-Fi durante AirDrop | Come |
 |---|---|---|
-| `esclusiva` | spento, torna dopo | NM/iwd fermati, coppia di interfacce monitor (normale + `active`) sul canale scelto |
-| `condivisa` | acceso | AWDL sul canale dell'AP (6/44/149), iniezione mentre si resta associati |
+| `esclusiva` | spento, torna dopo | NM/iwd fermati, coppia di interfacce monitor (normale + `active`) sul canale scelto, OWL `-S verbatim` |
+| `condivisa` | acceso | monitor con il MAC della scheda sul canale dell'AP (6/36/44/149): la scheda stessa conferma l'unicast dell'iPhone; OWL `-S intersect` |
+| `automatica` (predefinita) | dipende | condivisa se il Wi-Fi è collegato su un canale AWDL, altrimenti esclusiva |
 
-La MT7921 oggi funziona in modo affidabile solo in `esclusiva`.
+Con il driver di `driver/` caricato il servizio radio aggiunge a OWL `-R mcs7`
+(dati a 65 Mbit/s) e `-A` (risposta ADDBA, così l'iPhone aggrega i pacchetti).
+Le patch di OWL sono in `patches/`.
 
 ## Fasi
 

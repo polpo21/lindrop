@@ -11,6 +11,7 @@ macro_rules! say_err {
 
 mod airdrop;
 mod archive;
+mod ble;
 mod config;
 mod dvzip;
 mod http;
@@ -29,7 +30,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
-use config::{Config, Modalita};
+use config::Config;
 
 #[derive(Parser)]
 #[command(name = "lindrop", version, about = "AirDrop tra iPhone e Linux")]
@@ -54,6 +55,12 @@ enum Cmd {
     /// Servizio radio (root, avviato da systemd)
     #[command(hide = true)]
     Radio,
+    /// Prova la sveglia Bluetooth per qualche secondo
+    #[command(hide = true)]
+    Sveglia {
+        #[arg(default_value_t = 10)]
+        secondi: u64,
+    },
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -75,6 +82,7 @@ fn main() {
         Some(Cmd::Ricevi { minuti }) => ricevi(minuti),
         Some(Cmd::Invia { file }) => invia(file),
         Some(Cmd::Radio) => radio::serve(),
+        Some(Cmd::Sveglia { secondi }) => ble::Wake::start().map(|_w| std::thread::sleep(Duration::from_secs(secondi))),
     };
     if let Err(e) = r {
         say_err!("errore: {e:#}");
@@ -107,16 +115,15 @@ struct Awdl {
 
 impl Awdl {
     fn up(cfg: &Config) -> Result<Self> {
-        if cfg.modalita == Modalita::Condivisa {
-            bail!("la modalità condivisa non è ancora pronta: usa `modalita = \"esclusiva\"`");
-        }
         unsafe {
             libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
             libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
         }
-        say!("Accendo AWDL (il Wi-Fi si spegne finché sei visibile)…");
-        let mut link = radio::Link::up(cfg.canale, &cfg.paese)?;
-        say!("AWDL sul canale {}", link.canale);
+        say!("Accendo AWDL…");
+        let mut link = radio::Link::up(cfg.canale, &cfg.paese, cfg.modalita, &cfg.velocita)?;
+        let wifi = if link.condivisa { "il Wi-Fi resta acceso" } else { "il Wi-Fi è spento finché sei visibile" };
+        let speed = if link.velocita.is_empty() { String::new() } else { format!(", {}", link.velocita) };
+        say!("AWDL sul canale {} ({wifi}{speed})", link.canale);
         let dropped = link.dropped();
         let t = Instant::now();
         let (addr, _) = loop {
@@ -198,6 +205,14 @@ fn invia(files: Vec<PathBuf>) -> Result<()> {
     let ident = ident::Ident::load_or_create(&config::data_dir(), &cfg.nome)?;
     let sender = send::Sender::new(&ident, &cfg.nome)?;
     let awdl = Awdl::up(&cfg)?;
+    // After the radio: on combo chips bringing Wi-Fi up resets Bluetooth too.
+    let _wake = match ble::Wake::start() {
+        Ok(w) => Some(w),
+        Err(e) => {
+            say_err!("sveglia Bluetooth non partita ({e:#}): l'iPhone va tenuto sulla schermata AirDrop");
+            None
+        }
+    };
     awdl.mdns.browse(true);
     say!("Cerco iPhone… (sull'iPhone: AirDrop su «Tutti per 10 minuti», schermo acceso)");
 

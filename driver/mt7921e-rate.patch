@@ -1,63 +1,80 @@
 # lindrop: honour the rate injected through radiotap on mt7921e.
 # Stock mt7921e sends injected unicast data at CCK 1M, which the firmware
 # drops on 5 GHz, so AWDL replies (TCP ACKs, TLS) never reach the phone.
-# Same licence as the driver (BSD-3-Clause-Clear). Applies to Linux 7.2.9.
---- a/drivers/net/wireless/mediatek/mt76/mt7921/pci_mac.c	2026-10-17 13:52:17.972786111 +0200
-+++ b/drivers/net/wireless/mediatek/mt76/mt7921/pci_mac.c	2026-10-17 13:52:17.994887266 +0200
-@@ -5,6 +5,38 @@
+# Legacy rates and HT MCS 0-15 at 20 MHz. Same licence as the driver
+# (BSD-3-Clause-Clear). Applies to Linux 7.2.9.
+--- a/drivers/net/wireless/mediatek/mt76/mt7921/pci_mac.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7921/pci_mac.c
+@@ -5,6 +5,54 @@
  #include "../dma.h"
  #include "../mt76_connac2_mac.h"
  
 +/* lindrop: frames injected through a monitor interface (AWDL) carry the
 + * rate userspace asked for in radiotap. Without this, injected unicast data
 + * goes out at the default rate of the global wcid, CCK 1M, which the firmware
-+ * drops on 5 GHz. Only legacy rates; read before mt76_tx_status_skb_add(),
-+ * which clears info->control.flags.
++ * drops on 5 GHz. Legacy rates and HT MCS 0-15 at 20 MHz; read before
++ * mt76_tx_status_skb_add(), which clears info->control.flags. On success
++ * *txd6 holds the TX_RATE (and SGI) bits for TXD word 6.
 + */
 +static bool mt7921e_injected_rate(struct mt76_dev *mdev,
-+				  struct ieee80211_tx_info *info, u16 *rate)
++				  struct ieee80211_tx_info *info, u32 *txd6)
 +{
 +	struct ieee80211_supported_band *sband;
 +	struct ieee80211_tx_rate *r = &info->control.rates[0];
-+	u16 hw;
++	u16 rate;
 +
 +	if (!(info->flags & IEEE80211_TX_CTL_INJECTED) ||
 +	    (info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP) ||
 +	    !(info->control.flags & IEEE80211_TX_CTRL_RATE_INJECT) ||
-+	    (r->flags & (IEEE80211_TX_RC_MCS | IEEE80211_TX_RC_VHT_MCS)) ||
++	    (r->flags & (IEEE80211_TX_RC_VHT_MCS | IEEE80211_TX_RC_40_MHZ_WIDTH)) ||
 +	    info->band >= NUM_NL80211_BANDS)
 +		return false;
++
++	if (r->flags & IEEE80211_TX_RC_MCS) {
++		/* Two spatial streams only with two chains. */
++		if (r->idx < 0 || r->idx > 15 ||
++		    (r->idx > 7 && hweight8(mdev->phy.antenna_mask) < 2))
++			return false;
++		rate = FIELD_PREP(MT_TX_RATE_MODE, MT_PHY_TYPE_HT) |
++		       FIELD_PREP(MT_TX_RATE_IDX, r->idx) |
++		       FIELD_PREP(MT_TX_RATE_NSS, r->idx >> 3);
++		*txd6 = FIELD_PREP(MT_TXD6_TX_RATE, rate);
++		if (r->flags & IEEE80211_TX_RC_SHORT_GI)
++			*txd6 |= FIELD_PREP(MT_TXD6_SGI, 1);
++		return true;
++	}
 +
 +	sband = mdev->phy.hw->wiphy->bands[info->band];
 +	if (!sband || r->idx < 0 || r->idx >= sband->n_bitrates)
 +		return false;
 +
-+	hw = (r->flags & IEEE80211_TX_RC_USE_SHORT_PREAMBLE) ?
-+	     sband->bitrates[r->idx].hw_value_short :
-+	     sband->bitrates[r->idx].hw_value;
-+	*rate = FIELD_PREP(MT_TX_RATE_MODE, hw >> 8) |
-+		FIELD_PREP(MT_TX_RATE_IDX, hw & 0xff);
++	rate = (r->flags & IEEE80211_TX_RC_USE_SHORT_PREAMBLE) ?
++	       sband->bitrates[r->idx].hw_value_short :
++	       sband->bitrates[r->idx].hw_value;
++	*txd6 = FIELD_PREP(MT_TXD6_TX_RATE,
++			   FIELD_PREP(MT_TX_RATE_MODE, rate >> 8) |
++			   FIELD_PREP(MT_TX_RATE_IDX, rate & 0xff));
 +	return true;
 +}
 +
  int mt7921e_tx_prepare_skb(struct mt76_dev *mdev, void *txwi_ptr,
  			   enum mt76_txq_id qid, struct mt76_wcid *wcid,
  			   struct ieee80211_sta *sta,
-@@ -17,6 +49,9 @@
+@@ -17,6 +65,9 @@
  	struct mt76_txwi_cache *t;
  	int id, pid;
  	u8 *txwi = (u8 *)txwi_ptr;
 +	bool minrate = info->flags & IEEE80211_TX_CTL_USE_MINRATE;
-+	u16 inj_rate = 0;
++	u32 inj_txd6 = 0;
 +	bool inj;
  
  	if (unlikely(tx_info->skb->len <= ETH_HLEN))
  		return -EINVAL;
-@@ -40,9 +75,22 @@
+@@ -40,9 +91,22 @@
  		}
  	}
  
-+	inj = mt7921e_injected_rate(mdev, info, &inj_rate);
++	inj = mt7921e_injected_rate(mdev, info, &inj_txd6);
  	pid = mt76_tx_status_skb_add(mdev, wcid, tx_info->skb);
 +	/* USE_MINRATE takes the common fixed-rate path (FIX_RATE, fixed BW,
 +	 * BA disabled); the rate it picks is replaced right after. */
@@ -70,8 +87,8 @@
 +
 +		if (!minrate)
 +			info->flags &= ~IEEE80211_TX_CTL_USE_MINRATE;
-+		txd[6] &= ~cpu_to_le32(MT_TXD6_TX_RATE);
-+		txd[6] |= cpu_to_le32(FIELD_PREP(MT_TXD6_TX_RATE, inj_rate));
++		txd[6] &= ~cpu_to_le32(MT_TXD6_TX_RATE | MT_TXD6_SGI | MT_TXD6_BW);
++		txd[6] |= cpu_to_le32(inj_txd6);
 +	}
  
  	txp = (struct mt76_connac_hw_txp *)(txwi + MT_TXD_SIZE);

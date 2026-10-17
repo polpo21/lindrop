@@ -5,15 +5,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Modalita {
-    /// Wi-Fi off while visible, back afterwards. Works on any network.
-    #[default]
-    Esclusiva,
-    /// Wi-Fi stays associated; AWDL rides the AP's channel.
-    Condivisa,
-}
+pub use crate::radio::Modo as Modalita;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -32,6 +24,8 @@ pub struct Config {
     pub chiedi: bool,
     /// Minutes of visibility for `lindrop ricevi`.
     pub minuti: u64,
+    /// OWL data rate: "" automatic (mcs7 with our driver), "base", "mcs0".."mcs15", "6".."54".
+    pub velocita: String,
 }
 
 impl Default for Config {
@@ -44,6 +38,7 @@ impl Default for Config {
             paese: String::new(),
             chiedi: true,
             minuti: 10,
+            velocita: String::new(),
         }
     }
 }

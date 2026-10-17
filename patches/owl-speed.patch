@@ -1,0 +1,237 @@
+# OWL + lindrop: speed options
+#  -R RATE  PHY rate of data frames: 6..54 (Mbit/s) or mcs0..mcs15[-sgi];
+#           action frames stay at legacy 12. Needs a driver that honours
+#           injected rates (lindrop/driver for mt7921e).
+#  -A       answer ADDBA requests so the peer may aggregate (Block Ack).
+diff --git a/daemon/core.c b/daemon/core.c
+index bb8bdb9..f9dcc92 100644
+--- a/daemon/core.c
++++ b/daemon/core.c
+@@ -27,6 +27,8 @@
+ #include "schedule.h"
+ 
+ #include <signal.h>
++#include <string.h>
++#include <netinet/ether.h>
+ 
+ #ifdef __APPLE__
+ # define SIGSTATS SIGINFO
+@@ -109,6 +111,54 @@ void host_device_ready(struct ev_loop *loop, ev_io *handle, int revents) {
+ 		awdl_send_unicast(loop, &state->ev_state.tx_timer, 0);
+ }
+ 
++static int addba_accept;
++
++void awdl_set_addba_accept(int on) {
++	addba_accept = on;
++}
++
++/* Answer an ADDBA request (Block Ack setup) addressed to us. Unanswered, an
++ * iPhone asks again and again and sends every frame on its own; the Block
++ * Acks themselves come from the hardware, which owns our MAC. */
++static void awdl_addba_reply(struct daemon_state *state, const uint8_t *buf, uint32_t len) {
++	const struct ether_addr *self = &state->awdl_state.self_address;
++	uint8_t out[128], *ptr = out;
++	uint16_t rtlen, req, timeout, params, bufsize;
++	const uint8_t *h, *b;
++
++	if (len < 4)
++		return;
++	rtlen = buf[2] | (buf[3] << 8);
++	if (len < (uint32_t) rtlen + 24 + 9)
++		return;
++	h = buf + rtlen;
++	b = h + 24;
++	/* management/action, to us, category 3 (Block Ack), action 0 (ADDBA request) */
++	if (h[0] != 0xd0 || memcmp(h + 4, self, 6) || b[0] != 3 || b[1] != 0)
++		return;
++	req = b[3] | (b[4] << 8);
++	timeout = b[5] | (b[6] << 8);
++	bufsize = req >> 6;
++	if (bufsize == 0 || bufsize > 64)
++		bufsize = 64;
++	/* no A-MSDU, immediate Block Ack, the TID asked for, our buffer size */
++	params = 0x0002 | (req & 0x003c) | (bufsize << 6);
++
++	ptr += ieee80211_init_radiotap_header(ptr);
++	ptr += ieee80211_init_awdl_action_hdr(ptr, self, (const struct ether_addr *) (h + 10), &state->ieee80211_state);
++	*ptr++ = 3;                /* category: Block Ack */
++	*ptr++ = 1;                /* action: ADDBA response */
++	*ptr++ = b[2];             /* dialog token */
++	*ptr++ = 0; *ptr++ = 0;    /* status: success */
++	*ptr++ = params & 0xff; *ptr++ = params >> 8;
++	*ptr++ = timeout & 0xff; *ptr++ = timeout >> 8;
++	if (state->ieee80211_state.fcs)
++		ptr += ieee80211_add_fcs(out, ptr);
++	if (wlan_send(&state->io, out, ptr - out) >= 0)
++		log_debug("ADDBA accepted from %s (tid %d, buffer %d)", ether_ntoa((const struct ether_addr *) (h + 10)),
++		          (req >> 2) & 0xf, bufsize);
++}
++
+ void awdl_receive_frame(uint8_t *user, const struct pcap_pkthdr *hdr, const uint8_t *buf) {
+ #define MAX_NUM_AMPDU 16 /* TODO lookup this constant from the standard */
+ 	struct daemon_state *state = (void *) user;
+@@ -116,6 +166,8 @@ void awdl_receive_frame(uint8_t *user, const struct pcap_pkthdr *hdr, const uint
+ 	const struct buf *frame = buf_new_const(buf, hdr->caplen);
+ 	struct buf *data_arr[MAX_NUM_AMPDU];
+ 	struct buf **data = &data_arr[0];
++	if (addba_accept)
++		awdl_addba_reply(state, buf, hdr->caplen);
+ 	result = awdl_rx(frame, &data, &state->awdl_state);
+ 	if (result == RX_OK) {
+ 		for (struct buf **data_start = &data_arr[0]; data_start < data; data_start++) {
+diff --git a/daemon/core.h b/daemon/core.h
+index cb4d240..c386653 100644
+--- a/daemon/core.h
++++ b/daemon/core.h
+@@ -48,6 +48,9 @@ int awdl_init(struct daemon_state *state, const char *wlan, const char *host, st
+ 
+ void awdl_free(struct daemon_state *state);
+ 
++/* -A: answer ADDBA requests so the peer may aggregate. */
++void awdl_set_addba_accept(int on);
++
+ void awdl_schedule(struct ev_loop *loop, struct daemon_state *state);
+ 
+ void wlan_device_ready(struct ev_loop *loop, ev_io *handle, int revents);
+diff --git a/daemon/owl.c b/daemon/owl.c
+index 349c6a6..a3a6250 100644
+--- a/daemon/owl.c
++++ b/daemon/owl.c
+@@ -27,6 +27,7 @@
+ 
+ #include "log.h"
+ #include "core.h"
++#include "tx.h"
+ 
+ #define DEFAULT_AWDL_DEVICE "awdl0"
+ #define FAILED_DUMP "failed.pcap"
+@@ -101,7 +102,7 @@ int main(int argc, char *argv[]) {
+ 
+ 	struct daemon_state state;
+ 
+-	while ((c = getopt(argc, argv, "Dc:dvi:h:a:t:fNS:W:")) != -1) {
++	while ((c = getopt(argc, argv, "Dc:dvi:h:a:t:fNS:W:R:A")) != -1) {
+ 		switch (c) {
+ 			case 'S':
+ 				/* How to derive our channel sequence from a peer's. Exposed so a
+@@ -156,6 +157,15 @@ int main(int argc, char *argv[]) {
+ 			case 'N':
+ 				no_monitor_mode = 1;
+ 				break;
++			case 'R':
++				if (ieee80211_set_data_rate(optarg) < 0) {
++					log_error("-R takes 6..54 (Mbit/s) or mcs0..mcs15[-sgi]");
++					return EXIT_FAILURE;
++				}
++				break;
++			case 'A':
++				awdl_set_addba_accept(1);
++				break;
+ 			case '?':
+ 				if (optopt == 'i')
+ 					fprintf(stderr, "Option -%c needs to specify a wireless interface.\n", optopt);
+diff --git a/src/tx.c b/src/tx.c
+index d72d7ff..2004db9 100644
+--- a/src/tx.c
++++ b/src/tx.c
+@@ -21,6 +21,8 @@
+ #include <string.h>
+ 
+ #include <radiotap.h>
++#include <stdlib.h>
++#include <string.h>
+ 
+ #include "tx.h"
+ #include "sync.h"
+@@ -294,6 +296,65 @@ int awdl_init_version_tlv(uint8_t *buf, const struct awdl_state *state) {
+ 	return sizeof(struct awdl_version_tlv);
+ }
+ 
++/* PHY rate of data frames (-R): legacy Mbit/s, or HT MCS when data_mcs >= 0.
++ * Action frames always go at legacy 12, as iPhones send theirs. */
++static int data_rate = 12;
++static int data_mcs = -1;
++static int data_sgi;
++
++int ieee80211_set_data_rate(const char *spec) {
++	char *end;
++	long v;
++
++	if (!strncmp(spec, "mcs", 3)) {
++		v = strtol(spec + 3, &end, 10);
++		if (end == spec + 3 || v < 0 || v > 15)
++			return -1;
++		if (*end && strcmp(end, "-sgi"))
++			return -1;
++		data_mcs = (int) v;
++		data_sgi = *end != 0;
++		return 0;
++	}
++	v = strtol(spec, &end, 10);
++	if (*end)
++		return -1;
++	switch (v) {
++		case 6: case 9: case 12: case 18: case 24: case 36: case 48: case 54:
++			data_rate = (int) v;
++			data_mcs = -1;
++			return 0;
++		default:
++			return -1;
++	}
++}
++
++static int ieee80211_init_radiotap_data_header(uint8_t *buf) {
++	struct ieee80211_radiotap_header *hdr = (struct ieee80211_radiotap_header *) buf;
++	uint8_t *ptr = buf + sizeof(struct ieee80211_radiotap_header);
++	uint32_t present = 0;
++
++	if (data_mcs < 0) {
++		int len = ieee80211_init_radiotap_header(buf);
++		if (data_rate != 12)
++			buf[len - 1] = ieee80211_radiotap_rate_to_val(data_rate);
++		return len;
++	}
++
++	hdr->it_version = 0;
++	hdr->it_pad = 0;
++	present |= ieee80211_radiotap_type_to_mask(IEEE80211_RADIOTAP_MCS);
++	ptr[0] = IEEE80211_RADIOTAP_MCS_HAVE_BW | IEEE80211_RADIOTAP_MCS_HAVE_MCS | IEEE80211_RADIOTAP_MCS_HAVE_GI;
++	ptr[1] = IEEE80211_RADIOTAP_MCS_BW_20 | (data_sgi ? IEEE80211_RADIOTAP_MCS_SGI : 0);
++	ptr[2] = (uint8_t) data_mcs;
++	ptr += 3;
++
++	hdr->it_len = htole16((uint16_t) (ptr - buf));
++	hdr->it_present = htole32(present);
++
++	return ptr - buf;
++}
++
+ int ieee80211_init_radiotap_header(uint8_t *buf) {
+ 	/*
+ 	 * TX radiotap headers and mac80211
+@@ -389,7 +450,7 @@ int awdl_init_full_data_frame(uint8_t *buf, const struct ether_addr *src, const
+                               struct awdl_state *state, struct ieee80211_state *ieee80211_state) {
+ 	uint8_t *ptr = buf;
+ 
+-	ptr += ieee80211_init_radiotap_header(ptr);
++	ptr += ieee80211_init_radiotap_data_header(ptr);
+ 	ptr += ieee80211_init_awdl_data_hdr(ptr, src, dst, ieee80211_state);
+ 	ptr += llc_init_awdl_hdr(ptr);
+ 	ptr += awdl_init_data(ptr, state);
+diff --git a/src/tx.h b/src/tx.h
+index 9af9daa..3244144 100644
+--- a/src/tx.h
++++ b/src/tx.h
+@@ -61,6 +61,11 @@ int awdl_init_full_data_frame(uint8_t *buf, const struct ether_addr *src, const
+ 
+ int ieee80211_init_radiotap_header(uint8_t *buf);
+ 
++/* "12", "24", … or "mcs7", "mcs15-sgi"; 0 on success. */
++int ieee80211_set_data_rate(const char *spec);
++
++int ieee80211_add_fcs(const uint8_t *start, uint8_t *end);
++
+ int ieee80211_init_awdl_hdr(uint8_t *buf, const struct ether_addr *src, const struct ether_addr *dst,
+                             struct ieee80211_state *, uint16_t type);
+ 

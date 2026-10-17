@@ -29,7 +29,7 @@ desktop Linux normale:
 
 | Strato | Cosa fa | In lindrop |
 |---|---|---|
-| BLE | l'iPhone annuncia che vuole condividere; il PC lo sveglia quando vuole inviare | `ble` (da fare: serve per inviare) |
+| BLE | il PC sveglia l'iPhone quando vuole inviargli qualcosa | `ble` ✅ |
 | AWDL | il "Wi-Fi diretto" di Apple: crea l'interfaccia `awdl0` tra PC e telefono | fase 1: OWL esterno; fase 2: `awdl` in Rust |
 | mDNS | il servizio `_airdrop._tcp` annunciato e cercato su `awdl0` | `mdns` ✅ |
 | HTTPS | `/Discover`, `/Ask`, `/Upload` con messaggi plist | `airdrop`, `send` ✅ |
@@ -58,7 +58,9 @@ Configurazione facoltativa in `~/.config/lindrop/config.toml`:
 ```toml
 nome = "PC di Paolo"   # come ti vede l'iPhone
 cartella = "/home/io/Scaricati"
+modalita = "automatica" # o "condivisa" (Wi-Fi acceso) / "esclusiva" (Wi-Fi spento)
 canale = 0             # 0 = quello del Wi-Fi, oppure 6, 36, 44, 149
+velocita = ""          # "" = mcs7 + aggregazione col nostro driver; "base", "mcs0".."mcs15", "6".."54"
 paese = "IT"           # dominio regolatorio mentre il Wi-Fi è spento
 chiedi = true          # notifica Accetta/Rifiuta
 minuti = 10

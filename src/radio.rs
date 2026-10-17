@@ -36,18 +36,48 @@ const MONA: &str = "ldmon1";
 pub const AWDL: &str = "awdl0";
 const IDLE_EXIT: Duration = Duration::from_secs(120);
 
+/// How AWDL shares the card with the normal Wi-Fi.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Modo {
+    /// Shared when associated on a channel AWDL can use, else exclusive.
+    #[default]
+    Automatica,
+    /// Wi-Fi down for the session; AWDL owns the card.
+    Esclusiva,
+    /// Wi-Fi stays associated; AWDL rides the AP's channel.
+    Condivisa,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Request {
     /// Bring AWDL up for this connection; it goes down when the connection closes.
-    Su { canale: u8, paese: String },
+    Su {
+        canale: u8,
+        paese: String,
+        #[serde(default)]
+        modo: Modo,
+        /// OWL data rate (`-R`): "" = automatic, "base" = OWL's default.
+        #[serde(default)]
+        velocita: String,
+    },
     Stato,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Reply {
-    Pronto { iface: String, scheda: String, canale: u8 },
+    Pronto {
+        iface: String,
+        scheda: String,
+        canale: u8,
+        #[serde(default)]
+        condivisa: bool,
+        /// Data rate and aggregation in use ("" = OWL's defaults).
+        #[serde(default)]
+        velocita: String,
+    },
     Stato { attivo: bool, scheda: Option<String> },
     /// The session ended on its own (AWDL daemon died).
     Caduto { motivo: String },
@@ -119,6 +149,8 @@ struct Session {
     owl: Option<Child>,
     card: String,
     canale: u8,
+    condivisa: bool,
+    velocita: String,
 }
 
 impl Session {
@@ -127,33 +159,45 @@ impl Session {
         save(&self.undo)
     }
 
-    fn up(canale: u8, paese: &str) -> Result<Self> {
+    fn up(canale: u8, paese: &str, modo: Modo, velocita: &str) -> Result<Self> {
         if canale != 0 && mhz(canale).is_none() {
             bail!("canale {canale} non valido (0, 6, 36, 44 o 149)");
         }
         if !(paese.is_empty() || (paese.len() == 2 && paese.bytes().all(|b| b.is_ascii_uppercase()))) {
             bail!("paese {paese:?} non valido (due lettere maiuscole, es. IT)");
         }
+        // Reaches OWL's command line: a short token, OWL validates the value.
+        if velocita.len() > 12 || !velocita.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
+            bail!("velocità {velocita:?} non valida (es. mcs7, 24, base)");
+        }
         let card = Card::find()?;
         if !supported(&card.driver) {
             bail!("la scheda {} (driver {}) non è ancora supportata", card.iface, card.driver);
         }
         let owl = OWL.iter().map(Path::new).find(|p| root_owned(p)).context("OWL non installato (vedi scripts/owl.sh)")?;
-        let mut s = Session { undo: Vec::new(), owl: None, card: format!("{} ({})", card.iface, card.driver), canale: 0 };
-        if let Err(e) = s.build(&card, canale, paese, owl) {
+        let mut s = Session {
+            undo: Vec::new(),
+            owl: None,
+            card: format!("{} ({})", card.iface, card.driver),
+            canale: 0,
+            condivisa: false,
+            velocita: String::new(),
+        };
+        if let Err(e) = s.build(&card, canale, paese, modo, velocita, owl) {
             s.down();
             return Err(e);
         }
         Ok(s)
     }
 
-    fn build(&mut self, card: &Card, canale: u8, paese: &str, owl: &Path) -> Result<()> {
+    fn build(&mut self, card: &Card, canale: u8, paese: &str, modo: Modo, velocita: &str, owl: &Path) -> Result<()> {
+        let station = station_channel(&card.iface).filter(|c| mhz(*c).is_some());
         // Automatic: the channel the station is on now. A phone on the same
         // Wi-Fi spends most of its AWDL slots, multicast slot 0 included, there.
         // Not associated (Wi-Fi still reconnecting after the last session):
         // the channel that worked last time is a better guess than 149.
         let canale = match canale {
-            0 => station_channel(&card.iface)
+            0 => station
                 .or_else(|| fs::read_to_string(LAST).ok().and_then(|s| s.trim().parse().ok()))
                 .filter(|c| mhz(*c).is_some())
                 .unwrap_or(149),
@@ -162,7 +206,92 @@ impl Session {
         let _ = fs::write(LAST, canale.to_string());
         let freq = mhz(canale).expect("validated");
         self.canale = canale;
-        tracing::info!("canale AWDL {canale} ({freq} MHz)");
+        // Shared needs the station associated on the AWDL channel itself: the
+        // firmware keeps a monitor on the BSS channel while associated.
+        let condivisa = match modo {
+            Modo::Esclusiva => false,
+            Modo::Condivisa if station != Some(canale) => {
+                bail!("la modalità condivisa vuole il Wi-Fi collegato sul canale {canale} (ora: {station:?})")
+            }
+            Modo::Condivisa => true,
+            Modo::Automatica => station == Some(canale),
+        };
+        self.condivisa = condivisa;
+        tracing::info!("canale AWDL {canale} ({freq} MHz), {}", if condivisa { "condivisa" } else { "esclusiva" });
+
+        if !Path::new("/sys/kernel/debug/ieee80211").exists() {
+            let _ = run("mount", &["-t", "debugfs", "none", "/sys/kernel/debug"]);
+        }
+        let (vif, strategy) = if condivisa { (self.shared(card)?, "intersect") } else { (self.exclusive(card, freq, canale, paese)?, "verbatim") };
+
+        // Faster data frames and aggregation only with our driver: the stock
+        // one turns injected HT rates into CCK 1M, which 5 GHz drops.
+        let fast = patched_driver();
+        let rate = match velocita {
+            "" if fast => "mcs7",
+            "" | "base" => "",
+            v => v,
+        };
+        let mut args: Vec<String> = ["-i", vif, "-c", &canale.to_string(), "-N", "-S", strategy, "-v"].map(String::from).to_vec();
+        if !rate.is_empty() {
+            args.extend(["-R".into(), rate.into()]);
+        }
+        if fast {
+            args.push("-A".into());
+        }
+        self.velocita = [rate, if fast { "aggregazione" } else { "" }].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" + ");
+        tracing::info!("OWL {}", args.join(" "));
+
+        self.record(Undo::DelIface(AWDL.into()))?;
+        let log = fs::File::create(OWL_LOG)?;
+        let child = Command::new(owl)
+            .args(&args)
+            .stdout(log.try_clone()?)
+            .stderr(log)
+            .stdin(Stdio::null())
+            .spawn()
+            .context("avvio di OWL")?;
+        self.record(Undo::Kill(child.id()))?;
+        self.owl = Some(child);
+
+        let t = Instant::now();
+        while !Path::new("/sys/class/net").join(AWDL).exists() {
+            if t.elapsed() > Duration::from_secs(6) || self.owl_dead().is_some() {
+                bail!("OWL non ha creato {AWDL} (log in {OWL_LOG})");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        // The address is derived from the MAC and unique on the link: skip
+        // duplicate address detection (about a second at every start).
+        let _ = fs::write(format!("/proc/sys/net/ipv6/conf/{AWDL}/accept_dad"), "0");
+        let _ = run("ip", &["link", "set", AWDL, "up"]);
+        let _ = run("nmcli", &["device", "set", AWDL, "managed", "no"]);
+
+        if ufw_active() {
+            self.record(Undo::UfwDelete)?;
+            run("ufw", &["insert", "1", "allow", "in", "on", AWDL, "comment", "lindrop"])?;
+        }
+        Ok(())
+    }
+
+    /// Wi-Fi stays up: a plain monitor carrying the station's MAC rides the
+    /// station's channel. The phone's unicast to that MAC is ACKed by the
+    /// station itself, in hardware.
+    fn shared(&mut self, card: &Card) -> Result<&'static str> {
+        let mac = fs::read_to_string(Path::new("/sys/class/net").join(&card.iface).join("address"))?.trim().to_string();
+        let _ = run("iw", &["dev", MON, "del"]);
+        self.record(Undo::DelIface(MON.into()))?;
+        run("iw", &["phy", &card.phy, "interface", "add", MON, "type", "monitor"])?;
+        let _ = run("nmcli", &["device", "set", MON, "managed", "no"]);
+        run("ip", &["link", "set", MON, "address", &mac])?;
+        run("ip", &["link", "set", MON, "up"])?;
+        // Runtime PM silently kills monitor RX on mt76 (F§9).
+        self.pm_off(card)?;
+        Ok(MON)
+    }
+
+    /// Wi-Fi down: the card is all AWDL's, on any of the AWDL channels.
+    fn exclusive(&mut self, card: &Card, freq: u32, canale: u8, paese: &str) -> Result<&'static str> {
         // Read the country before letting go of the AP: it is the AP's IE that sets it.
         let paese = if paese.is_empty() { current_country().unwrap_or_default() } else { paese.to_string() };
         if paese.is_empty() && canale != 6 {
@@ -184,9 +313,6 @@ impl Session {
         self.record(Undo::LinkUp(card.iface.clone()))?;
         run("ip", &["link", "set", &card.iface, "down"])?;
 
-        if !Path::new("/sys/kernel/debug/ieee80211").exists() {
-            let _ = run("mount", &["-t", "debugfs", "none", "/sys/kernel/debug"]);
-        }
         // The pair (airdrop-mt7921 F§14): a plain monitor owns the channel,
         // the `active` one beside it rides that channel and ACKs unicast.
         for (name, active_flag) in [(MON, false), (MONA, true)] {
@@ -198,40 +324,12 @@ impl Session {
             }
             run("iw", &args)?;
             run("ip", &["link", "set", name, "up"])?;
-            // Runtime PM silently kills monitor RX on mt76 (F§9).
             self.pm_off(card)?;
             if !active_flag {
                 run("iw", &["dev", name, "set", "freq", &freq.to_string()])?;
             }
         }
-
-        self.record(Undo::DelIface(AWDL.into()))?;
-        let log = fs::File::create(OWL_LOG)?;
-        let child = Command::new(owl)
-            .args(["-i", MONA, "-c", &canale.to_string(), "-N", "-S", "verbatim", "-v"])
-            .stdout(log.try_clone()?)
-            .stderr(log)
-            .stdin(Stdio::null())
-            .spawn()
-            .context("avvio di OWL")?;
-        self.record(Undo::Kill(child.id()))?;
-        self.owl = Some(child);
-
-        let t = Instant::now();
-        while !Path::new("/sys/class/net").join(AWDL).exists() {
-            if t.elapsed() > Duration::from_secs(6) || self.owl_dead().is_some() {
-                bail!("OWL non ha creato {AWDL} (log in {OWL_LOG})");
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        let _ = run("ip", &["link", "set", AWDL, "up"]);
-        let _ = run("nmcli", &["device", "set", AWDL, "managed", "no"]);
-
-        if ufw_active() {
-            self.record(Undo::UfwDelete)?;
-            run("ufw", &["insert", "1", "allow", "in", "on", AWDL, "comment", "lindrop"])?;
-        }
-        Ok(())
+        Ok(MONA)
     }
 
     fn pm_off(&mut self, card: &Card) -> Result<()> {
@@ -330,6 +428,21 @@ fn station_channel(iface: &str) -> Option<u8> {
         5000..=5900 => Some(((freq - 5000) / 5) as u8),
         _ => None,
     }
+}
+
+/// Our mt7921e (scripts/driver.sh) is the one loaded.
+fn patched_driver() -> bool {
+    let ours = Path::new("/lib/modules").join(uname_r()).join("updates/lindrop/mt7921e.ko");
+    let Ok(loaded) = fs::read_to_string("/sys/module/mt7921e/srcversion") else { return false };
+    Command::new("modinfo")
+        .args(["-F", "srcversion"])
+        .arg(&ours)
+        .output()
+        .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == loaded.trim())
+}
+
+fn uname_r() -> String {
+    fs::read_to_string("/proc/sys/kernel/osrelease").map(|s| s.trim().to_string()).unwrap_or_default()
 }
 
 fn current_country() -> Option<String> {
@@ -455,11 +568,17 @@ fn client(s: UnixStream) -> Result<()> {
         let reply = match serde_json::from_str::<Request>(line.trim()) {
             Ok(Request::Stato) => Reply::Stato { attivo: session.is_some(), scheda: session.as_ref().map(|s| s.card.clone()) },
             Ok(Request::Su { .. }) if session.is_some() => Reply::Errore { messaggio: "già attivo".into() },
-            Ok(Request::Su { canale, paese }) => {
-                tracing::info!("su: canale {canale}, paese {paese:?} (utente {uid})");
-                match Session::up(canale, &paese) {
+            Ok(Request::Su { canale, paese, modo, velocita }) => {
+                tracing::info!("su: canale {canale}, paese {paese:?}, {modo:?}, velocità {velocita:?} (utente {uid})");
+                match Session::up(canale, &paese, modo, &velocita) {
                     Ok(s) => {
-                        let r = Reply::Pronto { iface: AWDL.into(), scheda: s.card.clone(), canale: s.canale };
+                        let r = Reply::Pronto {
+                            iface: AWDL.into(),
+                            scheda: s.card.clone(),
+                            canale: s.canale,
+                            condivisa: s.condivisa,
+                            velocita: s.velocita.clone(),
+                        };
                         session = Some(s);
                         r
                     }
@@ -492,18 +611,22 @@ pub struct Link {
     r: Option<BufReader<UnixStream>>,
     pub scheda: String,
     pub canale: u8,
+    pub condivisa: bool,
+    pub velocita: String,
 }
 
 impl Link {
-    pub fn up(canale: u8, paese: &str) -> Result<Self> {
+    pub fn up(canale: u8, paese: &str, modo: Modo, velocita: &str) -> Result<Self> {
         let s = UnixStream::connect(SOCKET).with_context(|| {
             format!("servizio radio non raggiungibile ({SOCKET}): è installato? `systemctl status lindrop-radio.socket`")
         })?;
         let mut w = s.try_clone()?;
         let mut r = BufReader::new(s);
-        send(&mut w, &Request::Su { canale, paese: paese.into() })?;
+        send(&mut w, &Request::Su { canale, paese: paese.into(), modo, velocita: velocita.into() })?;
         match read_reply(&mut r)? {
-            Reply::Pronto { scheda, canale, .. } => Ok(Self { w, r: Some(r), scheda, canale }),
+            Reply::Pronto { scheda, canale, condivisa, velocita, .. } => {
+                Ok(Self { w, r: Some(r), scheda, canale, condivisa, velocita })
+            }
             Reply::Errore { messaggio } => bail!("{messaggio}"),
             other => bail!("risposta inattesa: {other:?}"),
         }
