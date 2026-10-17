@@ -45,7 +45,7 @@ pub enum Request {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Reply {
-    Pronto { iface: String, scheda: String },
+    Pronto { iface: String, scheda: String, canale: u8 },
     Stato { attivo: bool, scheda: Option<String> },
     /// The session ended on its own (AWDL daemon died).
     Caduto { motivo: String },
@@ -105,6 +105,7 @@ fn supported(driver: &str) -> bool {
 fn mhz(ch: u8) -> Option<u32> {
     match ch {
         6 => Some(2437),
+        36 => Some(5180),
         44 => Some(5220),
         149 => Some(5745),
         _ => None,
@@ -115,6 +116,7 @@ struct Session {
     undo: Vec<Undo>,
     owl: Option<Child>,
     card: String,
+    canale: u8,
 }
 
 impl Session {
@@ -124,7 +126,9 @@ impl Session {
     }
 
     fn up(canale: u8, paese: &str) -> Result<Self> {
-        let freq = mhz(canale).with_context(|| format!("canale {canale} non valido (6, 44 o 149)"))?;
+        if canale != 0 && mhz(canale).is_none() {
+            bail!("canale {canale} non valido (0, 6, 36, 44 o 149)");
+        }
         if !(paese.is_empty() || (paese.len() == 2 && paese.bytes().all(|b| b.is_ascii_uppercase()))) {
             bail!("paese {paese:?} non valido (due lettere maiuscole, es. IT)");
         }
@@ -133,15 +137,24 @@ impl Session {
             bail!("la scheda {} (driver {}) non è ancora supportata", card.iface, card.driver);
         }
         let owl = OWL.iter().map(Path::new).find(|p| root_owned(p)).context("OWL non installato (vedi scripts/owl.sh)")?;
-        let mut s = Session { undo: Vec::new(), owl: None, card: format!("{} ({})", card.iface, card.driver) };
-        if let Err(e) = s.build(&card, freq, canale, paese, owl) {
+        let mut s = Session { undo: Vec::new(), owl: None, card: format!("{} ({})", card.iface, card.driver), canale: 0 };
+        if let Err(e) = s.build(&card, canale, paese, owl) {
             s.down();
             return Err(e);
         }
         Ok(s)
     }
 
-    fn build(&mut self, card: &Card, freq: u32, canale: u8, paese: &str, owl: &Path) -> Result<()> {
+    fn build(&mut self, card: &Card, canale: u8, paese: &str, owl: &Path) -> Result<()> {
+        // Automatic: the channel the station is on now. A phone on the same
+        // Wi-Fi spends most of its AWDL slots, multicast slot 0 included, there.
+        let canale = match canale {
+            0 => station_channel(&card.iface).filter(|c| mhz(*c).is_some()).unwrap_or(149),
+            c => c,
+        };
+        let freq = mhz(canale).expect("validated");
+        self.canale = canale;
+        tracing::info!("canale AWDL {canale} ({freq} MHz)");
         // Read the country before letting go of the AP: it is the AP's IE that sets it.
         let paese = if paese.is_empty() { current_country().unwrap_or_default() } else { paese.to_string() };
         if paese.is_empty() && canale != 6 {
@@ -299,6 +312,18 @@ fn ufw_active() -> bool {
     Command::new("ufw").arg("status").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("Status: active"))
 }
 
+/// The channel the interface is associated on, if any.
+fn station_channel(iface: &str) -> Option<u8> {
+    let out = Command::new("iw").args(["dev", iface, "link"]).output().ok()?;
+    let s = String::from_utf8_lossy(&out.stdout);
+    let freq: u32 = s.lines().find_map(|l| l.trim().strip_prefix("freq: "))?.split('.').next()?.parse().ok()?;
+    match freq {
+        2412..=2472 => Some(((freq - 2407) / 5) as u8),
+        5000..=5900 => Some(((freq - 5000) / 5) as u8),
+        _ => None,
+    }
+}
+
 fn current_country() -> Option<String> {
     let out = Command::new("iw").args(["reg", "get"]).output().ok()?;
     String::from_utf8_lossy(&out.stdout).lines().find_map(|l| {
@@ -426,7 +451,7 @@ fn client(s: UnixStream) -> Result<()> {
                 tracing::info!("su: canale {canale}, paese {paese:?} (utente {uid})");
                 match Session::up(canale, &paese) {
                     Ok(s) => {
-                        let r = Reply::Pronto { iface: AWDL.into(), scheda: s.card.clone() };
+                        let r = Reply::Pronto { iface: AWDL.into(), scheda: s.card.clone(), canale: s.canale };
                         session = Some(s);
                         r
                     }
@@ -458,6 +483,7 @@ pub struct Link {
     w: UnixStream,
     r: Option<BufReader<UnixStream>>,
     pub scheda: String,
+    pub canale: u8,
 }
 
 impl Link {
@@ -469,7 +495,7 @@ impl Link {
         let mut r = BufReader::new(s);
         send(&mut w, &Request::Su { canale, paese: paese.into() })?;
         match read_reply(&mut r)? {
-            Reply::Pronto { scheda, .. } => Ok(Self { w, r: Some(r), scheda }),
+            Reply::Pronto { scheda, canale, .. } => Ok(Self { w, r: Some(r), scheda, canale }),
             Reply::Errore { messaggio } => bail!("{messaggio}"),
             other => bail!("risposta inattesa: {other:?}"),
         }

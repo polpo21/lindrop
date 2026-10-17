@@ -56,7 +56,7 @@ Configurazione facoltativa in `~/.config/lindrop/config.toml`:
 ```toml
 nome = "PC di Paolo"   # come ti vede l'iPhone
 cartella = "/home/io/Scaricati"
-canale = 149           # 6, 44 o 149
+canale = 0             # 0 = quello del Wi-Fi, oppure 6, 36, 44, 149
 paese = "IT"           # dominio regolatorio mentre il Wi-Fi è spento
 chiedi = true          # notifica Accetta/Rifiuta
 minuti = 10

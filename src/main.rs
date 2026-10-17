@@ -78,7 +78,8 @@ fn stato() -> Result<()> {
     println!("lindrop {}", env!("CARGO_PKG_VERSION"));
     println!("  nome       {}", cfg.nome);
     println!("  cartella   {}", cfg.cartella.display());
-    println!("  modalità   {:?}, canale {}", cfg.modalita, cfg.canale);
+    let canale = if cfg.canale == 0 { "automatico".to_string() } else { cfg.canale.to_string() };
+    println!("  modalità   {:?}, canale {canale}", cfg.modalita);
     let radio = std::path::Path::new(radio::SOCKET).exists();
     println!("  radio      {}", if radio { "servizio pronto" } else { "servizio non installato" });
     println!("\n  lindrop ricevi          diventa visibile all'iPhone");
@@ -104,8 +105,9 @@ impl Awdl {
             libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
             libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
         }
-        println!("Accendo AWDL sul canale {} (il Wi-Fi si spegne finché sei visibile)…", cfg.canale);
+        println!("Accendo AWDL (il Wi-Fi si spegne finché sei visibile)…");
         let mut link = radio::Link::up(cfg.canale, &cfg.paese)?;
+        println!("AWDL sul canale {}", link.canale);
         let dropped = link.dropped();
         let t = Instant::now();
         let (addr, _) = loop {

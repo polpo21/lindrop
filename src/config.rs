@@ -23,7 +23,8 @@ pub struct Config {
     /// Where received files land.
     pub cartella: PathBuf,
     pub modalita: Modalita,
-    /// AWDL channel in exclusive mode (6, 44 or 149).
+    /// AWDL channel: 6, 36, 44 or 149, or 0 = the Wi-Fi's own channel (the
+    /// phone at home is on it most of the time), else 149.
     pub canale: u8,
     /// Two-letter regulatory country, pinned while Wi-Fi is down.
     pub paese: String,
@@ -39,7 +40,7 @@ impl Default for Config {
             nome: default_name(),
             cartella: download_dir(),
             modalita: Modalita::default(),
-            canale: 149,
+            canale: 0,
             paese: String::new(),
             chiedi: true,
             minuti: 10,
@@ -55,8 +56,8 @@ impl Config {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
             Err(e) => return Err(e).with_context(|| format!("leggo {}", path.display())),
         };
-        if ![6, 44, 149].contains(&cfg.canale) {
-            anyhow::bail!("canale {} non valido in {}: usa 6, 44 o 149", cfg.canale, path.display());
+        if ![0, 6, 36, 44, 149].contains(&cfg.canale) {
+            anyhow::bail!("canale {} non valido in {}: usa 0 (automatico), 6, 36, 44 o 149", cfg.canale, path.display());
         }
         Ok(cfg)
     }
