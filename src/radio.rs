@@ -199,7 +199,18 @@ impl Session {
     }
 
     fn build(&mut self, card: &Card, canale: u8, paese: &str, modo: Modo, velocita: &str, owl: &Path) -> Result<()> {
-        let station = station_channel(&card.iface).filter(|c| mhz(*c).is_some());
+        let mut station = station_channel(&card.iface).filter(|c| mhz(*c).is_some());
+        // Automatic mode and the Wi-Fi is not associated: usually it is still
+        // reconnecting after the last session. Give it a few seconds, or we
+        // would fall back to exclusive and take the Wi-Fi down for nothing.
+        if station.is_none() && modo == Modo::Automatica && (active("iwd") || active("NetworkManager")) {
+            let t = Instant::now();
+            while station.is_none() && t.elapsed() < Duration::from_secs(10) {
+                stopping()?;
+                std::thread::sleep(Duration::from_millis(500));
+                station = station_channel(&card.iface).filter(|c| mhz(*c).is_some());
+            }
+        }
         // Automatic: the channel the station is on now. A phone on the same
         // Wi-Fi spends most of its AWDL slots, multicast slot 0 included, there.
         // Not associated (Wi-Fi still reconnecting after the last session):
