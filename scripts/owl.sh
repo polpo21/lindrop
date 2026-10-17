@@ -14,7 +14,8 @@ fi
 git -C "$SRC" fetch --quiet origin
 git -C "$SRC" checkout --quiet "$COMMIT"
 git -C "$SRC" submodule update --quiet --init --recursive
-cmake -S "$SRC" -B "$SRC/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
+# The bundled googletest declares a CMake minimum newer CMake refuses.
+cmake -S "$SRC" -B "$SRC/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -Wno-deprecated >/dev/null
 # Only the daemon: the bundled googletest does not build with current GCC.
 cmake --build "$SRC/build" --target owl -j"$(nproc)" >/dev/null
 sudo install -D -o root -g root -m 755 "$SRC/build/daemon/owl" "$DEST"
