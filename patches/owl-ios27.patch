@@ -1,8 +1,8 @@
-diff --git a/src/election.c b/src/election.c
 # OWL 832d70f + lindrop fixes:
 #  - accept the zero padding iOS 27 puts at the end of some action frames
 #  - radiotap flags default to 0 when the field is absent
 #  - elect the sync master by metric, then counter, as Apple does
+diff --git a/src/election.c b/src/election.c
 index 0ef4a43..bce28ab 100644
 --- a/src/election.c
 +++ b/src/election.c
