@@ -39,7 +39,9 @@ ln -sfn "$PWD/packaging/lindrop-ricevi.service" "$HOME/.config/systemd/user/lind
 systemctl --user daemon-reload
 ln -sfn "$PWD/integrazioni/noctalia/lindrop" "$HOME/.local/share/noctalia/plugins/lindrop"
 if command -v noctalia >/dev/null && noctalia msg plugins list >/dev/null 2>&1; then
-  noctalia msg plugins enable polpo/lindrop >/dev/null && echo "  plugin polpo/lindrop attivo: aggiungi \"polpo/lindrop:airdrop\" alla barra"
+  noctalia msg plugins enable polpo/lindrop >/dev/null && echo "  plugin polpo/lindrop attivo"
+  noctalia config export 2>/dev/null | grep -q 'polpo/lindrop:airdrop' \
+    || echo "  per l'icona: aggiungi un widget di tipo \"polpo/lindrop:airdrop\" alla barra"
 fi
 
 step "Fatto"
