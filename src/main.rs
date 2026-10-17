@@ -98,7 +98,19 @@ fn stato() -> Result<()> {
     let canale = if cfg.canale == 0 { "automatico".to_string() } else { cfg.canale.to_string() };
     say!("  modalità   {:?}, canale {canale}", cfg.modalita);
     let radio = std::path::Path::new(radio::SOCKET).exists();
-    say!("  radio      {}", if radio { "servizio pronto" } else { "servizio non installato" });
+    say!("  radio      {}", if radio { "servizio pronto" } else { "servizio non installato (./install.sh)" });
+    let driver = if radio::patched_driver() {
+        "mt7921e di lindrop (veloce)"
+    } else {
+        "di serie: l'iPhone perde i pacchetti a 5 GHz (scripts/driver.sh)"
+    };
+    say!("  driver     {driver}");
+    let ricezione = std::process::Command::new("systemctl")
+        .args(["--user", "is-active", "lindrop-ricevi.service"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    say!("  barra      ricezione {}", if ricezione == "active" { "accesa" } else { "spenta" });
     say!("\n  lindrop ricevi          diventa visibile all'iPhone");
     say!("  lindrop invia <file>    invia a un iPhone vicino");
     Ok(())
@@ -220,7 +232,7 @@ fn invia(files: Vec<PathBuf>) -> Result<()> {
         }
     };
     awdl.mdns.browse(true);
-    say!("Cerco iPhone… (sull'iPhone: AirDrop su «Tutti per 10 minuti», schermo acceso)");
+    say!("Cerco iPhone… sull'iPhone: AirDrop su «Tutti per 10 minuti» e Condividi → AirDrop aperto");
 
     let t = Instant::now();
     let peer = loop {

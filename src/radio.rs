@@ -266,6 +266,12 @@ impl Session {
         let _ = fs::write(format!("/proc/sys/net/ipv6/conf/{AWDL}/accept_dad"), "0");
         let _ = run("ip", &["link", "set", AWDL, "up"]);
         let _ = run("nmcli", &["device", "set", AWDL, "managed", "no"]);
+        // systemd-resolved would otherwise answer mDNS on awdl0 for the
+        // hostname, beside our own records. The link dies with the session.
+        if active("systemd-resolved") {
+            let _ = run("resolvectl", &["mdns", AWDL, "no"]);
+            let _ = run("resolvectl", &["llmnr", AWDL, "no"]);
+        }
 
         if ufw_active() {
             self.record(Undo::UfwDelete)?;
@@ -431,7 +437,7 @@ fn station_channel(iface: &str) -> Option<u8> {
 }
 
 /// Our mt7921e (scripts/driver.sh) is the one loaded.
-fn patched_driver() -> bool {
+pub fn patched_driver() -> bool {
     let ours = Path::new("/lib/modules").join(uname_r()).join("updates/lindrop/mt7921e.ko");
     let Ok(loaded) = fs::read_to_string("/sys/module/mt7921e/srcversion") else { return false };
     Command::new("modinfo")
@@ -500,11 +506,11 @@ pub fn serve() -> Result<()> {
         libc::signal(libc::SIGINT, on_term as *const () as libc::sighandler_t);
     }
     // A previous run died mid-session: put the system back first.
-    if let Ok(s) = fs::read(STATE) {
-        if let Ok(undo) = serde_json::from_slice::<Vec<Undo>>(&s) {
-            tracing::warn!("sessione precedente non chiusa: ripristino");
-            undo_all(undo);
-        }
+    if let Ok(s) = fs::read(STATE)
+        && let Ok(undo) = serde_json::from_slice::<Vec<Undo>>(&s)
+    {
+        tracing::warn!("sessione precedente non chiusa: ripristino");
+        undo_all(undo);
     }
     let listener = if std::env::var("LISTEN_FDS").as_deref() == Ok("1") {
         unsafe { UnixListener::from_raw_fd(3) }
