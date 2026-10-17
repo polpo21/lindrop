@@ -1,0 +1,8 @@
+# The AWDL interface carries a MAC chosen by its daemon, and the link-local
+# address announced to the phone derives from it. The default policy
+# (MACAddressPolicy=persistent) would replace it as soon as it appears.
+[Match]
+OriginalName=awdl0
+
+[Link]
+MACAddressPolicy=none

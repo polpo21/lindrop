@@ -3,7 +3,8 @@
 **AirDrop tra iPhone e Linux, scritto da zero in Rust.**
 *AirDrop between iPhone and Linux, written from scratch in Rust. Work in progress.*
 
-> Stato: in costruzione. Ancora niente funziona end-to-end.
+> Stato: fase 1 in costruzione. Protocollo, mDNS e servizio radio scritti e
+> provati in locale; manca la prova con un iPhone vero.
 
 ## Perché
 
@@ -26,13 +27,40 @@ desktop Linux normale:
 
 | Strato | Cosa fa | In lindrop |
 |---|---|---|
-| BLE | l'iPhone annuncia che vuole condividere; il PC lo sveglia quando vuole inviare | `ble` (da fare) |
+| BLE | l'iPhone annuncia che vuole condividere; il PC lo sveglia quando vuole inviare | `ble` (da fare: serve per inviare) |
 | AWDL | il "Wi-Fi diretto" di Apple: crea l'interfaccia `awdl0` tra PC e telefono | fase 1: OWL esterno; fase 2: `awdl` in Rust |
-| mDNS | il servizio `_airdrop._tcp` annunciato e cercato su `awdl0` | `mdns` (da fare) |
-| HTTPS | `/Discover`, `/Ask`, `/Upload` con messaggi plist | `airdrop` (da fare) |
-| Archivio | i file viaggiano come cpio compresso con gzip | `archive` ✅ |
+| mDNS | il servizio `_airdrop._tcp` annunciato e cercato su `awdl0` | `mdns` ✅ |
+| HTTPS | `/Discover`, `/Ask`, `/Upload` con messaggi plist | `airdrop`, `send` ✅ |
+| Archivio | cpio dentro dvzip (iOS 18+) o gzip (vecchi) | `archive`, `dvzip` ✅ |
 
-Dettagli in [docs/ARCHITETTURA.md](docs/ARCHITETTURA.md).
+Dettagli in [docs/ARCHITETTURA.md](docs/ARCHITETTURA.md); quello che abbiamo
+imparato dai progetti esistenti è in [docs/ricerca/](docs/ricerca/).
+
+## Installazione
+
+```sh
+git clone https://github.com/polpo21/lindrop && cd lindrop
+./install.sh
+```
+
+Installa `/usr/local/bin/lindrop`, compila OWL (AWDL, fase 1) e attiva il
+servizio `lindrop-radio`. Poi:
+
+```sh
+lindrop ricevi          # visibile all'iPhone per 10 minuti
+lindrop invia foto.jpg  # invia a un iPhone vicino
+```
+
+Configurazione facoltativa in `~/.config/lindrop/config.toml`:
+
+```toml
+nome = "PC di Paolo"   # come ti vede l'iPhone
+cartella = "/home/io/Scaricati"
+canale = 149           # 6, 44 o 149
+paese = "IT"           # dominio regolatorio mentre il Wi-Fi è spento
+chiedi = true          # notifica Accetta/Rifiuta
+minuti = 10
+```
 
 ## Hardware
 

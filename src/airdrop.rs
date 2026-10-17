@@ -134,14 +134,7 @@ impl Receiver {
         Arc::new(Self { name, dest, ui, tls, accepted: Mutex::new(HashMap::new()) })
     }
 
-    /// Listens on `[::]:port` bound to `iface`; one thread per connection.
-    pub fn serve(self: &Arc<Self>, iface: &str, port: u16) -> Result<()> {
-        let listener = listen(iface, port)?;
-        tracing::info!("in ascolto su {iface} porta {port}");
-        self.serve_on(listener);
-        Ok(())
-    }
-
+    /// Serves `listener` (see [`listen`]); one thread per connection.
     pub fn serve_on(self: &Arc<Self>, listener: TcpListener) {
         for conn in listener.incoming() {
             let Ok(tcp) = conn else { continue };

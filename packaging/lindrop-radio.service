@@ -1,0 +1,18 @@
+[Unit]
+Description=lindrop: radio AirDrop (AWDL sulla scheda Wi-Fi)
+Requires=lindrop-radio.socket
+After=network.target
+
+[Service]
+# Root-owned binary only: never point this at a user-writable path.
+ExecStart=/usr/local/bin/lindrop radio
+# Stopping tears the session down and gives the Wi-Fi back.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+Environment=LINDROP_LOG=lindrop=info
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+ProtectSystem=full
+# ufw keeps its rules here.
+ReadWritePaths=/etc/ufw
