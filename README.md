@@ -3,10 +3,9 @@
 **AirDrop tra iPhone e Linux, scritto da zero in Rust.**
 *AirDrop between iPhone and Linux, written from scratch in Rust. Work in progress.*
 
-> Stato: fase 1. Prima prova con un iPhone vero (iOS 27, 17/10/2026): l'iPhone
-> trova il PC, chiede il permesso e inizia a inviare; col driver `mt7921e` di
-> serie il collegamento perde troppi pacchetti e il trasferimento si ferma.
-> La correzione del driver è in `driver/` (da provare).
+> Stato: fase 1, funzionante con un iPhone su iOS 27 (17/10/2026), in
+> entrambe le direzioni e con il Wi-Fi acceso: ricezione di una foto da 8,4 MB a
+> 3,4 MB/s, invio di una foto da 500 kB in 4 s. Serve il driver di `driver/`.
 
 ## Perché
 
@@ -79,6 +78,15 @@ rilanciato. Non funziona se il kernel accetta solo moduli firmati.
 
 Il primo obiettivo è la scheda **MediaTek MT7921** (driver `mt7921e`). Serve una
 scheda che supporti il monitor mode con iniezione di pacchetti.
+
+## Cosa abbiamo scoperto su iOS 27
+
+- Alcuni frame AWDL finiscono con 2 byte di zeri: OWL li rifiutava
+  (`patches/owl-ios27.patch`).
+- L'annuncio Bluetooth AirDrop è alla **versione 3** (iOS 26: versione 1), con
+  i primi byte del prefisso non più a zero. Un iPhone con iOS 27 ignora
+  l'annuncio versione 1 e non si mostra a chi vuole inviargli qualcosa:
+  `05 12 40252267 00000000 03 <4 hash da 2 byte> 00`.
 
 ## Limiti che non dipendono da noi
 

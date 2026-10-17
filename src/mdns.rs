@@ -167,6 +167,11 @@ impl Mdns {
     /// address is simply where the packet came from (link-local on awdl0).
     fn learn(&self, p: &Packet, src: SocketAddr) {
         let SocketAddr::V6(src) = src else { return };
+        tracing::debug!(
+            "mdns da {}: {:?}",
+            src.ip(),
+            p.answers.iter().chain(&p.additional_records).map(|r| r.name.to_string()).collect::<Vec<_>>()
+        );
         let all = p.answers.iter().chain(&p.additional_records);
         for rr in all {
             let name = rr.name.to_string();
