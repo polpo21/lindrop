@@ -6,7 +6,7 @@
 //! order and the dvzip body as a single chunk of `TotalBytes`.
 
 use std::fs::File;
-use std::io::{self, BufReader, Read, Seek, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -107,14 +107,16 @@ impl Sender {
         ask.insert("Files".into(), Value::Array(list));
 
         // Build the body first: TotalBytes must be known before it is sent.
-        let mut body = tempfile::tempfile().context("file temporaneo")?;
+        // Not /tmp: it is RAM (tmpfs) here, and a video can be gigabytes.
+        let spool = crate::config::cache_dir();
+        std::fs::create_dir_all(&spool)?;
+        let mut body = tempfile::tempfile_in(&spool).context("file temporaneo")?;
         pack(files, &mut body)?;
         let total = body.stream_position()?;
         body.rewind()?;
 
         let mut s = self.connect(addr)?;
         // A person is deciding: wait up to ASK_WAIT, interruptible.
-        s.get_ref().sock.set_read_timeout(None)?;
         let (code, _) = post_plist_wait(&mut s, "/Ask", ask, "keep-alive", Some((cancel, ASK_WAIT)))?;
         match code {
             200 => {}
@@ -139,6 +141,9 @@ impl Sender {
         let mut buf = vec![0u8; SLICE];
         let mut sent = 0;
         loop {
+            if cancel.load(Ordering::SeqCst) {
+                bail!("interrotto");
+            }
             let n = body.read(&mut buf)?;
             if n == 0 {
                 break;
@@ -193,8 +198,18 @@ fn post_plist_wait(
     c.write_all(&body)?;
     c.finish()?;
     if let Some((cancel, limit)) = wait {
+        // Wait for plaintext, not for socket bytes: a TLS 1.3 session ticket
+        // makes the socket readable long before the answer. fill_buf with a
+        // 1 s timeout returns WouldBlock without losing anything.
+        s.get_ref().sock.set_read_timeout(Some(Duration::from_secs(1)))?;
         let t = std::time::Instant::now();
-        while !readable(s, Duration::from_secs(1)) {
+        loop {
+            match s.fill_buf() {
+                Ok([]) => bail!("{path}: connessione chiusa senza risposta"),
+                Ok(_) => break,
+                Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {}
+                Err(e) => return Err(e.into()),
+            }
             if cancel.load(Ordering::SeqCst) {
                 bail!("interrotto");
             }
@@ -202,20 +217,11 @@ fn post_plist_wait(
                 bail!("nessuna risposta dall'iPhone in {} s", limit.as_secs());
             }
         }
+        s.get_ref().sock.set_read_timeout(Some(CONNECT * 3))?;
     }
     let head = http::read_head(s)?.with_context(|| format!("{path}: connessione chiusa senza risposta"))?;
     let body = http::read_small(&head, s, 4 << 20)?;
     Ok((head.status(), body))
-}
-
-/// Bytes are waiting, in rustls or on the socket.
-fn readable(s: &Tls, timeout: Duration) -> bool {
-    use std::os::fd::AsRawFd;
-    if !s.buffer().is_empty() {
-        return true;
-    }
-    let mut p = libc::pollfd { fd: s.get_ref().sock.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-    unsafe { libc::poll(&mut p, 1, timeout.as_millis() as i32) > 0 }
 }
 
 /// dvzip(cpio) of the files, as Apple lays it out: a `.` directory, then `./name`.
@@ -356,6 +362,45 @@ mod tests {
         assert!(matches!(tx.send(addr, &[a], &AtomicBool::new(false), &|_, _| {}).unwrap(), Outcome::Declined));
         assert!(ui.asked.load(Ordering::SeqCst));
         assert!(ui.got.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cancel_while_the_phone_decides() {
+        struct Slow(Arc<AtomicBool>);
+        impl Ui for Slow {
+            fn ask(&self, _: &Ask) -> bool {
+                std::thread::sleep(Duration::from_secs(4));
+                true
+            }
+            fn received(&self, _: &Ask, _: &[PathBuf], _: f64) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+            fn failed(&self, _: &str) {}
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("Scaricati");
+        std::fs::create_dir(&dest).unwrap();
+        let ident = Ident::load_or_create(&dir.path().join("id"), "Prova").unwrap();
+        let uploaded = Arc::new(AtomicBool::new(false));
+        let rx = Receiver::new("PC".into(), dest, ident.server_config().unwrap(), Box::new(Slow(Arc::clone(&uploaded))));
+        let listener = crate::airdrop::listen("lo", 0).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || rx.serve_on(listener));
+        let tx = Sender::new(&ident, "Prova").unwrap();
+        let a = dir.path().join("x.txt");
+        std::fs::write(&a, "x").unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let c = Arc::clone(&cancel);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            c.store(true, Ordering::SeqCst);
+        });
+        let t = std::time::Instant::now();
+        let addr = SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port));
+        assert!(tx.send(addr, &[a], &cancel, &|_, _| {}).is_err());
+        assert!(t.elapsed() < Duration::from_secs(3), "cancel took {:?}", t.elapsed());
+        std::thread::sleep(Duration::from_secs(5));
+        assert!(!uploaded.load(Ordering::SeqCst), "the file was sent after cancel");
     }
 
     #[test]

@@ -51,6 +51,9 @@ enum Cmd {
     Invia {
         #[arg(required = true)]
         file: Vec<PathBuf>,
+        /// Solo al dispositivo con questo nome (basta una parte, es. "Paolo")
+        #[arg(short, long)]
+        a: Option<String>,
     },
     /// Servizio radio (root, avviato da systemd)
     #[command(hide = true)]
@@ -80,7 +83,7 @@ fn main() {
     let r = match Cli::parse().cmd {
         None => stato(),
         Some(Cmd::Ricevi { minuti }) => ricevi(minuti),
-        Some(Cmd::Invia { file }) => invia(file),
+        Some(Cmd::Invia { file, a }) => invia(file, a),
         Some(Cmd::Radio) => radio::serve(),
         Some(Cmd::Sveglia { secondi }) => ble::Wake::start().map(|_w| std::thread::sleep(Duration::from_secs(secondi))),
     };
@@ -213,7 +216,25 @@ fn ricevi(minuti: Option<u64>) -> Result<()> {
     Ok(())
 }
 
-fn invia(files: Vec<PathBuf>) -> Result<()> {
+
+/// More than one receiver: ask which, on a terminal; elsewhere refuse.
+fn choose(list: &[(std::net::SocketAddr, String)]) -> Result<(std::net::SocketAddr, String)> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        let names: Vec<_> = list.iter().map(|(_, n)| format!("«{n}»")).collect();
+        bail!("più dispositivi vicini ({}): scegli con --a NOME", names.join(", "));
+    }
+    say!("Dispositivi vicini:");
+    for (i, (_, n)) in list.iter().enumerate() {
+        say!("  {}. {n}", i + 1);
+    }
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    let i: usize = line.trim().parse().ok().filter(|i| (1..=list.len()).contains(i)).context("scelta non valida")?;
+    Ok(list[i - 1].clone())
+}
+
+fn invia(files: Vec<PathBuf>, to: Option<String>) -> Result<()> {
     for f in &files {
         if !f.is_file() {
             bail!("{} non è un file", f.display());
@@ -234,27 +255,54 @@ fn invia(files: Vec<PathBuf>) -> Result<()> {
     awdl.mdns.browse(true);
     say!("Cerco iPhone… sull'iPhone: AirDrop su «Tutti per 10 minuti» e Condividi → AirDrop aperto");
 
+    // Name every receiver through /Discover, once each. Never send to the first
+    // that answers blindly: anything on the link can claim to be a receiver.
+    let limit = Duration::from_secs(std::env::var("LINDROP_CERCA_S").ok().and_then(|v| v.parse().ok()).unwrap_or(120));
+    let wanted = to.as_deref().map(str::to_lowercase);
     let t = Instant::now();
-    let peer = loop {
+    let mut asked = std::collections::HashSet::new();
+    let mut named: Vec<(std::net::SocketAddr, String)> = Vec::new();
+    let mut first_match: Option<Instant> = None;
+    let (addr, name) = loop {
         if let Some(why) = awdl.should_stop() {
             bail!("{why}");
         }
-        let found: Vec<_> = awdl.mdns.peers();
-        // Name each one through /Discover; the first that answers wins.
-        if let Some((p, name)) = found.iter().find_map(|p| sender.discover(p.addr).ok().flatten().map(|n| (p.clone(), n))) {
-            break (p, name);
+        for p in awdl.mdns.peers() {
+            if awdl.should_stop().is_some() {
+                break;
+            }
+            if asked.insert(p.addr)
+                && let Ok(Some(n)) = sender.discover(p.addr)
+            {
+                named.push((p.addr, n));
+            }
         }
-        let limit = std::env::var("LINDROP_CERCA_S").ok().and_then(|v| v.parse().ok()).unwrap_or(120);
-        if t.elapsed() > Duration::from_secs(limit) {
-            bail!("nessun iPhone trovato in {limit} secondi");
+        let matches: Vec<_> =
+            named.iter().filter(|(_, n)| wanted.as_ref().is_none_or(|w| n.to_lowercase().contains(w))).cloned().collect();
+        if !matches.is_empty() {
+            // A couple of seconds more, so a second device nearby shows up too.
+            let since = *first_match.get_or_insert_with(Instant::now);
+            if matches.len() == 1 && since.elapsed() >= Duration::from_secs(2) {
+                break matches[0].clone();
+            }
+            if matches.len() > 1 && since.elapsed() >= Duration::from_secs(2) {
+                break choose(&matches)?;
+            }
+        }
+        if t.elapsed() > limit {
+            let seen: Vec<_> = named.iter().map(|(_, n)| format!("«{n}»")).collect();
+            match &to {
+                Some(w) if !seen.is_empty() => bail!("nessun «{w}» tra {}", seen.join(", ")),
+                _ => bail!("nessun iPhone trovato in {} secondi", limit.as_secs()),
+            }
         }
         std::thread::sleep(Duration::from_millis(500));
     };
-    let (p, name) = peer;
+    let p = addr;
     say!("Trovato «{name}». Conferma sull'iPhone…");
     let total: u64 = files.iter().filter_map(|f| f.metadata().ok()).map(|m| m.len()).sum();
     let start = Instant::now();
-    let out = sender.send(p.addr, &files, &STOP, &|sent, tot| {
+    let out = sender.send(p, &files, &STOP, &|sent, tot| {
         let mut out = std::io::stdout();
         let _ = write!(out, "\r  {:>3}%  {} di {}", sent * 100 / tot.max(1), airdrop::human(sent), airdrop::human(tot));
         let _ = out.flush();
