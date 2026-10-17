@@ -20,6 +20,11 @@
   `stato`) in JSON, una riga per messaggio: niente argomenti liberi, niente
   `sudo`. Il servizio ha solo `CAP_NET_ADMIN` e `CAP_NET_RAW` (più l'accesso a
   debugfs) e se il client sparisce rimette a posto il Wi-Fi da solo.
+- Una sessione alla volta (la scheda ha una radio sola): un secondo client
+  riceve subito «occupato». Il firewall (ufw) si apre con una regola
+  `ip6tables` di runtime in `ufw6-before-input`, mai scritta in `/etc/ufw`.
+  Dopo qualsiasi arresto `ExecStopPost=lindrop radio --ripristina` rilegge il
+  giornale delle modifiche e rimette a posto il Wi-Fi.
 - **`lindrop`** (utente) fa tutto il resto: annuncia il servizio, riceve e invia
   i file, chiede conferma con una notifica, salva in `~/Scaricati`.
 

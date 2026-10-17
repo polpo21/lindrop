@@ -19,6 +19,16 @@ local function poll()
             elseif out == "activating" then "starting"
             elseif out == "deactivating" then "stopping"
             else "off"
+        -- It stopped by itself (radio busy, card unsupported…): say why.
+        if out == "failed" or (state == "starting" and new == "off") then
+            noctalia.runAsync({ "journalctl", "--user", "-u", UNIT, "-n", "1", "-o", "cat", "--no-pager" }, function(j)
+                local why = string.gsub(j.stdout or "", "%s+$", "")
+                noctalia.notifyError("AirDrop non partito", if why ~= "" then why else "vedi journalctl --user -u " .. UNIT)
+            end, 3000)
+            if out == "failed" then
+                noctalia.runAsync({ "systemctl", "--user", "reset-failed", UNIT })
+            end
+        end
         if new ~= state then
             state = new
             publish()
@@ -48,7 +58,8 @@ local function onCommand(cmd)
     elseif cmd.action == "stop" then
         run("stop", "stopping")
     elseif cmd.action == "open" then
-        noctalia.runAsync({ "xdg-open", noctalia.expandPath("~/Downloads") })
+        -- lindrop knows the folder (config `cartella`, else XDG_DOWNLOAD_DIR).
+        noctalia.runAsync({ "lindrop", "apri" })
     end
 end
 

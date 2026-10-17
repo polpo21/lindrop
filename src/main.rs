@@ -57,7 +57,14 @@ enum Cmd {
     },
     /// Servizio radio (root, avviato da systemd)
     #[command(hide = true)]
-    Radio,
+    Radio {
+        /// Rimetti a posto il Wi-Fi da una sessione rimasta aperta ed esci
+        #[arg(long)]
+        ripristina: bool,
+    },
+    /// Apre la cartella dei file ricevuti (la usa la barra)
+    #[command(hide = true)]
+    Apri,
     /// Prova la sveglia Bluetooth per qualche secondo
     #[command(hide = true)]
     Sveglia {
@@ -84,7 +91,12 @@ fn main() {
         None => stato(),
         Some(Cmd::Ricevi { minuti }) => ricevi(minuti),
         Some(Cmd::Invia { file, a }) => invia(file, a),
-        Some(Cmd::Radio) => radio::serve(),
+        Some(Cmd::Apri) => Config::load().and_then(|c| {
+            std::process::Command::new("xdg-open").arg(&c.cartella).spawn()?;
+            Ok(())
+        }),
+        Some(Cmd::Radio { ripristina: false }) => radio::serve(),
+        Some(Cmd::Radio { ripristina: true }) => radio::restore(),
         Some(Cmd::Sveglia { secondi }) => ble::Wake::start().map(|_w| std::thread::sleep(Duration::from_secs(secondi))),
     };
     if let Err(e) = r {

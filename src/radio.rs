@@ -12,12 +12,12 @@
 //! channel from a fixed list and a two-letter country.
 
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -34,6 +34,9 @@ const OWL: &[&str] = &["/usr/lib/lindrop/owl", "/usr/local/lib/lindrop/owl"];
 const MON: &str = "ldmon0";
 const MONA: &str = "ldmon1";
 pub const AWDL: &str = "awdl0";
+const UFW6_CHAIN: &str = "ufw6-before-input";
+/// A request line longer than this is not one of ours.
+const MAX_REQUEST: u64 = 4096;
 const IDLE_EXIT: Duration = Duration::from_secs(120);
 
 /// How AWDL shares the card with the normal Wi-Fi.
@@ -92,7 +95,12 @@ enum Undo {
     DelIface(String),
     LinkUp(String),
     Debugfs(PathBuf, String),
+    /// Old sessions only: a persistent ufw rule (now a runtime ip6tables one).
     UfwDelete,
+    /// Runtime rule in ufw's own input chain: gone at reboot or ufw reload.
+    Ip6Accept,
+    /// Country before we pinned it ("" = none to put back).
+    Reg(String),
     Kill(u32),
 }
 
@@ -222,6 +230,7 @@ impl Session {
         if !Path::new("/sys/kernel/debug/ieee80211").exists() {
             let _ = run("mount", &["-t", "debugfs", "none", "/sys/kernel/debug"]);
         }
+        stopping()?;
         let (vif, strategy) = if condivisa { (self.shared(card)?, "intersect") } else { (self.exclusive(card, freq, canale, paese)?, "verbatim") };
 
         // Faster data frames and aggregation only with our driver: the stock
@@ -242,6 +251,7 @@ impl Session {
         self.velocita = [rate, if fast { "aggregazione" } else { "" }].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" + ");
         tracing::info!("OWL {}", args.join(" "));
 
+        stopping()?;
         self.record(Undo::DelIface(AWDL.into()))?;
         let log = fs::File::create(OWL_LOG)?;
         let child = Command::new(owl)
@@ -256,6 +266,7 @@ impl Session {
 
         let t = Instant::now();
         while !Path::new("/sys/class/net").join(AWDL).exists() {
+            stopping()?;
             if t.elapsed() > Duration::from_secs(6) || self.owl_dead().is_some() {
                 bail!("OWL non ha creato {AWDL} (log in {OWL_LOG})");
             }
@@ -273,9 +284,12 @@ impl Session {
             let _ = run("resolvectl", &["llmnr", AWDL, "no"]);
         }
 
+        // AWDL is IPv6 link-local only. A runtime rule at the top of ufw's own
+        // chain: nothing is written to /etc/ufw, so a power cut mid-session
+        // cannot leave the port open for good.
         if ufw_active() {
-            self.record(Undo::UfwDelete)?;
-            run("ufw", &["insert", "1", "allow", "in", "on", AWDL, "comment", "lindrop"])?;
+            self.record(Undo::Ip6Accept)?;
+            run("ip6tables", &["-I", UFW6_CHAIN, "1", "-i", AWDL, "-j", "ACCEPT"])?;
         }
         Ok(())
     }
@@ -314,6 +328,7 @@ impl Session {
             run("nmcli", &["device", "set", &card.iface, "managed", "no"])?;
         }
         if !paese.is_empty() {
+            self.record(Undo::Reg(current_country().unwrap_or_default()))?;
             run("iw", &["reg", "set", &paese])?;
         }
         self.record(Undo::LinkUp(card.iface.clone()))?;
@@ -383,6 +398,9 @@ fn undo_all(steps: Vec<Undo>) {
             Undo::LinkUp(i) => run("ip", &["link", "set", i, "up"]),
             Undo::Debugfs(p, v) => fs::write(p, v).map_err(Into::into),
             Undo::UfwDelete => run("ufw", &["delete", "allow", "in", "on", AWDL]),
+            Undo::Ip6Accept => run("ip6tables", &["-D", UFW6_CHAIN, "-i", AWDL, "-j", "ACCEPT"]),
+            Undo::Reg(c) if !c.is_empty() => run("iw", &["reg", "set", c]),
+            Undo::Reg(_) => Ok(()),
             Undo::Kill(pid) => {
                 // Only if it is still our OWL, not a recycled pid.
                 let exe = fs::read_link(format!("/proc/{pid}/exe")).ok();
@@ -492,6 +510,14 @@ fn user_name(uid: u32) -> Option<String> {
 
 static TERM: AtomicBool = AtomicBool::new(false);
 
+/// systemd is stopping us: give up building a session (it gets torn down).
+fn stopping() -> Result<()> {
+    if TERM.load(Ordering::SeqCst) {
+        bail!("servizio in arresto");
+    }
+    Ok(())
+}
+
 extern "C" fn on_term(_: libc::c_int) {
     TERM.store(true, Ordering::SeqCst);
 }
@@ -512,7 +538,11 @@ pub fn serve() -> Result<()> {
         tracing::warn!("sessione precedente non chiusa: ripristino");
         undo_all(undo);
     }
-    let listener = if std::env::var("LISTEN_FDS").as_deref() == Ok("1") {
+    let activated = std::env::var("LISTEN_FDS").as_deref() == Ok("1")
+        && std::env::var("LISTEN_PID").ok().and_then(|p| p.parse::<u32>().ok()) == Some(std::process::id());
+    let listener = if activated {
+        // Children (OWL, iw, nmcli) must not inherit the listening socket.
+        unsafe { libc::fcntl(3, libc::F_SETFD, libc::FD_CLOEXEC) };
         unsafe { UnixListener::from_raw_fd(3) }
     } else {
         fs::create_dir_all("/run/lindrop")?;
@@ -526,14 +556,21 @@ pub fn serve() -> Result<()> {
     let mut idle = Instant::now();
     while !TERM.load(Ordering::SeqCst) {
         match listener.accept() {
+            // One thread per client, so a second client gets an answer (busy)
+            // instead of waiting behind a session that may last hours.
             Ok((s, _)) => {
-                if let Err(e) = client(s) {
-                    tracing::warn!("{e:#}");
-                }
-                idle = Instant::now();
+                CLIENTS.fetch_add(1, Ordering::SeqCst);
+                std::thread::spawn(move || {
+                    if let Err(e) = client(s) {
+                        tracing::warn!("{e:#}");
+                    }
+                    CLIENTS.fetch_sub(1, Ordering::SeqCst);
+                });
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if idle.elapsed() > IDLE_EXIT {
+                if CLIENTS.load(Ordering::SeqCst) > 0 {
+                    idle = Instant::now();
+                } else if idle.elapsed() > IDLE_EXIT {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(200));
@@ -541,7 +578,35 @@ pub fn serve() -> Result<()> {
             Err(e) => return Err(e.into()),
         }
     }
+    // Stopping: every client sees TERM and tears its session down; wait for it.
+    let t = Instant::now();
+    while CLIENTS.load(Ordering::SeqCst) > 0 && t.elapsed() < Duration::from_secs(45) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
     Ok(())
+}
+
+/// `lindrop radio --ripristina`: replay a leftover undo journal and exit.
+/// Run by systemd after the service stops, however it stopped.
+pub fn restore() -> Result<()> {
+    if unsafe { libc::geteuid() } != 0 {
+        bail!("serve root");
+    }
+    if let Ok(s) = fs::read(STATE)
+        && let Ok(undo) = serde_json::from_slice::<Vec<Undo>>(&s)
+    {
+        tracing::warn!("sessione non chiusa: ripristino");
+        undo_all(undo);
+    }
+    Ok(())
+}
+
+static CLIENTS: AtomicUsize = AtomicUsize::new(0);
+/// One AWDL session at a time: the card has one radio.
+static BUSY: AtomicBool = AtomicBool::new(false);
+
+fn busy_message() -> String {
+    "la radio è già in uso da un'altra sessione AirDrop (la ricezione dalla barra?): spegnila e riprova".into()
 }
 
 fn client(s: UnixStream) -> Result<()> {
@@ -565,8 +630,12 @@ fn client(s: UnixStream) -> Result<()> {
             break Ok(());
         }
         line.clear();
-        match r.read_line(&mut line) {
+        match r.by_ref().take(MAX_REQUEST).read_line(&mut line) {
             Ok(0) => break Ok(()), // client gone: tear down
+            Ok(_) if !line.ends_with('\n') && line.len() as u64 >= MAX_REQUEST => {
+                let _ = send(&mut w, &Reply::Errore { messaggio: "richiesta troppo lunga".into() });
+                break Ok(());
+            }
             Ok(_) => {}
             Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
             Err(e) => break Err(e.into()),
@@ -574,9 +643,14 @@ fn client(s: UnixStream) -> Result<()> {
         let reply = match serde_json::from_str::<Request>(line.trim()) {
             Ok(Request::Stato) => Reply::Stato { attivo: session.is_some(), scheda: session.as_ref().map(|s| s.card.clone()) },
             Ok(Request::Su { .. }) if session.is_some() => Reply::Errore { messaggio: "già attivo".into() },
+            Ok(Request::Su { .. }) if BUSY.swap(true, Ordering::SeqCst) => Reply::Errore { messaggio: busy_message() },
             Ok(Request::Su { canale, paese, modo, velocita }) => {
                 tracing::info!("su: canale {canale}, paese {paese:?}, {modo:?}, velocità {velocita:?} (utente {uid})");
-                match Session::up(canale, &paese, modo, &velocita) {
+                let up = Session::up(canale, &paese, modo, &velocita);
+                if up.is_err() {
+                    BUSY.store(false, Ordering::SeqCst);
+                }
+                match up {
                     Ok(s) => {
                         let r = Reply::Pronto {
                             iface: AWDL.into(),
@@ -600,6 +674,7 @@ fn client(s: UnixStream) -> Result<()> {
     if let Some(mut s) = session {
         tracing::info!("giù");
         s.down();
+        BUSY.store(false, Ordering::SeqCst);
     }
     result
 }
@@ -627,9 +702,13 @@ impl Link {
             format!("servizio radio non raggiungibile ({SOCKET}): è installato? `systemctl status lindrop-radio.socket`")
         })?;
         let mut w = s.try_clone()?;
+        // Bringing AWDL up takes seconds, never a minute: do not hang on a stuck service.
+        s.set_read_timeout(Some(Duration::from_secs(45)))?;
         let mut r = BufReader::new(s);
         send(&mut w, &Request::Su { canale, paese: paese.into(), modo, velocita: velocita.into() })?;
-        match read_reply(&mut r)? {
+        let reply = read_reply(&mut r);
+        r.get_ref().set_read_timeout(None)?;
+        match reply? {
             Reply::Pronto { scheda, canale, condivisa, velocita, .. } => {
                 Ok(Self { w, r: Some(r), scheda, canale, condivisa, velocita })
             }

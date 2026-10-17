@@ -6,9 +6,12 @@ After=network.target
 [Service]
 # Root-owned binary only: never point this at a user-writable path.
 ExecStart=/usr/local/bin/lindrop radio
+# However it stopped (crash, SIGKILL after the timeout), replay the undo
+# journal right away instead of at the next session.
+ExecStopPost=/usr/local/bin/lindrop radio --ripristina
 # Stopping tears the session down and gives the Wi-Fi back.
 KillSignal=SIGTERM
-TimeoutStopSec=20
+TimeoutStopSec=60
 # lindrop=debug to see every command it runs.
 Environment=LINDROP_LOG=lindrop=info
 NoNewPrivileges=yes

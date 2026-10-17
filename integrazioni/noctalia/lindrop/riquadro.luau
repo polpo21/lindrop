@@ -16,9 +16,9 @@ apply(noctalia.state.get("status"))
 noctalia.state.watch("status", apply)
 
 function onClick()
-    noctalia.state.set("command", { action = "toggle" })
+    noctalia.state.set("command", { action = "toggle", t = noctalia.nowMs() })
 end
 
 function onRightClick()
-    noctalia.state.set("command", { action = "open" })
+    noctalia.state.set("command", { action = "open", t = noctalia.nowMs() })
 end

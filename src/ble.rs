@@ -100,18 +100,21 @@ impl Wake {
             props.set(iface, "Powered", Value::from(true)).context("accendo il Bluetooth")?;
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
-        conn.object_server().at(PATH, Advert)?;
+        // From here on, Drop puts Bluetooth back as it was, even on error.
+        let wake = Self { conn, powered_by_us: !powered };
+        wake.conn.object_server().at(PATH, Advert)?;
         let opts: HashMap<&str, Value> = HashMap::new();
-        conn.call_method(
-            Some("org.bluez"),
-            ADAPTER,
-            Some("org.bluez.LEAdvertisingManager1"),
-            "RegisterAdvertisement",
-            &(ObjectPath::try_from(PATH)?, opts),
-        )
-        .context("BlueZ ha rifiutato l'annuncio BLE")?;
+        wake.conn
+            .call_method(
+                Some("org.bluez"),
+                ADAPTER,
+                Some("org.bluez.LEAdvertisingManager1"),
+                "RegisterAdvertisement",
+                &(ObjectPath::try_from(PATH)?, opts),
+            )
+            .context("BlueZ ha rifiutato l'annuncio BLE")?;
         tracing::info!("annuncio BLE AirDrop attivo: {}", crate::ident::hex(&advert()));
-        Ok(Self { conn, powered_by_us: !powered })
+        Ok(wake)
     }
 }
 

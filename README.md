@@ -48,8 +48,17 @@ Installa `/usr/local/bin/lindrop`, compila OWL (AWDL, fase 1) e attiva il
 servizio `lindrop-radio`. Poi:
 
 ```sh
-lindrop ricevi          # visibile all'iPhone per 10 minuti
-lindrop invia foto.jpg  # invia a un iPhone vicino
+lindrop ricevi          # visibile all'iPhone per 10 minuti (0 = senza limite)
+lindrop invia foto.jpg  # invia a un iPhone vicino; con più dispositivi chiede quale
+lindrop invia -a Paolo foto.jpg   # solo al dispositivo con «Paolo» nel nome
+```
+
+Nella barra di Noctalia (plugin in `integrazioni/noctalia/`, lo collega
+`install.sh`): clic sull'icona AirDrop = ricezione accesa/spenta, clic destro
+= cartella dei file ricevuti.
+
+```sh
+lindrop                 # stato: radio, driver, ricezione dalla barra
 ```
 
 Configurazione facoltativa in `~/.config/lindrop/config.toml`:
