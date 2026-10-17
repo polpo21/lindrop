@@ -1,0 +1,53 @@
+diff --git a/src/election.c b/src/election.c
+# OWL 832d70f + lindrop fixes:
+#  - accept the zero padding iOS 27 puts at the end of some action frames
+#  - radiotap flags default to 0 when the field is absent
+#  - elect the sync master by metric, then counter, as Apple does
+index 0ef4a43..bce28ab 100644
+--- a/src/election.c
++++ b/src/election.c
+@@ -58,9 +58,11 @@ void awdl_election_state_init(struct awdl_election_state *state, const struct et
+ }
+ 
+ static int awdl_election_compare_master(const struct awdl_election_state *a, const struct awdl_election_state *b) {
+-	int result = compare(a->master_counter, b->master_counter);
++	/* Apple ranks by metric first, counter second; counter-first can keep
++	 * us in a sync tree the phone has already left. */
++	int result = compare(a->master_metric, b->master_metric);
+ 	if (!result)
+-		result = compare(a->master_metric, b->master_metric);
++		result = compare(a->master_counter, b->master_counter);
+ 	return result;
+ }
+ 
+diff --git a/src/rx.c b/src/rx.c
+index 4581ae5..326742d 100644
+--- a/src/rx.c
++++ b/src/rx.c
+@@ -322,8 +322,15 @@ int awdl_rx_action(const struct buf *frame, signed char rssi, uint64_t tsft,
+ 	}
+ 
+ 	if (buf_len(frame) > 0) {
+-		log_debug("awdl_action: unexpected bytes (%d) at end of frame", buf_len(frame));
+-		return RX_UNEXPECTED_FORMAT;
++		/* iOS 27 ends some action frames with zero padding. Fewer than the
++		 * 3 bytes of a TLV header, all zero, is padding, not a TLV. */
++		int pad = buf_len(frame) < 3;
++		for (int i = 0; pad && i < buf_len(frame); i++)
++			pad = buf_data(frame)[i] == 0;
++		if (!pad) {
++			log_debug("awdl_action: unexpected bytes (%d) at end of frame", buf_len(frame));
++			return RX_UNEXPECTED_FORMAT;
++		}
+ 	}
+ 
+ 	if (subtype == AWDL_ACTION_MIF)
+@@ -485,7 +492,7 @@ int awdl_rx(const struct buf *frame, struct buf ***data_frame, struct awdl_state
+ 	uint16_t fc, qosc; /* frame and QoS control */
+ 	signed char rssi;
+ 	uint64_t tsft;
+-	uint8_t flags;
++	uint8_t flags = 0; /* radiotap may carry no Flags field at all */
+ 
+ 	tsft = clock_time_us(); /* TODO Radiotap TSFT is more accurate but then need to access TSF in clock_time_us() */
+ 	if (radiotap_parse(frame, &rssi, &flags, NULL /* &tsft */) < 0)
