@@ -157,9 +157,10 @@ impl Drop for Awdl {
         self.mdns.withdraw();
         self.stop.store(true, Ordering::SeqCst);
         if let Some(l) = self.link.take() {
+            let shared = l.condivisa;
             l.close();
+            say!("{}", if shared { "AWDL spento." } else { "AWDL spento, il Wi-Fi torna da solo." });
         }
-        say!("AWDL spento, il Wi-Fi torna da solo.");
     }
 }
 
