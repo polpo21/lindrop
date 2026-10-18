@@ -1,19 +1,24 @@
-# lindrop - AirDrop from the bar. A headless [[service]] polls the user unit
-# lindrop-ricevi.service and publishes "status"; the bar [[widget]] and the
-# control-center [[shortcut]] mirror it and drive the unit through "command".
+# lindrop - AirDrop from the bar and a control-center panel. A headless
+# [[service]] owns the truth: it polls the user unit lindrop-ricevi.service,
+# publishes "status", runs sends (publishing "send"), and acts on "command".
+# The bar [[widget]], the control-center [[shortcut]] tile and the [[panel]]
+# are thin clients over that shared state.
 #
-# Widget: left click = receive on/off, right click = open the received files.
+# Widget:   left = receive on/off, right = open the management panel.
+# Tile:     click = open the panel, right = receive on/off.
+# Panel:    receive toggle, "Invia file…" (zenity picker → lindrop invia),
+#           open the received-files folder.
 
 id = "polpo/lindrop"
 name = "lindrop"
-version = "0.1.0"
+version = "0.2.0"
 plugin_api = 24
 author = "polpo"
 license = "GPL-3.0-or-later"
-dependencies = ["lindrop"]
+dependencies = ["lindrop", "zenity"]
 tags = ["airdrop", "iphone", "sharing"]
 icon = "access-point"
-description = "AirDrop tra iPhone e Linux: accendi e spegni la ricezione dalla barra."
+description = "AirDrop tra iPhone e Linux: ricevi dalla barra e invia dal centro di controllo."
 
 [[service]]
 id = "service"
@@ -29,3 +34,12 @@ entry = "widget.luau"
 [[shortcut]]
 id = "ricezione"
 entry = "riquadro.luau"
+
+[[panel]]
+id = "gestione"
+entry = "pannello.luau"
+width = 340
+height = 320
+placement = "attached"
+position = "auto"
+open_near_click = true

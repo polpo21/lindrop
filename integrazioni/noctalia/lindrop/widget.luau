@@ -1,6 +1,8 @@
 --!nonstrict
 -- lindrop - bar widget. Thin client: mirrors "status", writes "command".
+-- Left click = receive on/off, right click = open the management panel.
 
+local PANEL = "polpo/lindrop:gestione"
 local state = "unknown"
 
 local function apply(status)
@@ -13,7 +15,7 @@ local function apply(status)
         barWidget.setTooltip({
             { "AirDrop", "in ricezione" },
             { "iPhone", "AirDrop su «Tutti per 10 minuti»" },
-            { "Clic", "spegni · destro: file ricevuti" },
+            { "Clic", "spegni · destro: pannello" },
         })
     elseif state == "starting" or state == "stopping" then
         barWidget.setGlyph("access-point")
@@ -24,7 +26,7 @@ local function apply(status)
         barWidget.setGlyphColor("on_surface_variant")
         barWidget.setTooltip({
             { "AirDrop", "spento" },
-            { "Clic", "ricevi dall'iPhone · destro: file ricevuti" },
+            { "Clic", "ricevi dall'iPhone · destro: pannello" },
         })
     end
 end
@@ -34,7 +36,7 @@ function onClick()
 end
 
 function onRightClick()
-    noctalia.state.set("command", { action = "open", t = noctalia.nowMs() })
+    noctalia.togglePanel(PANEL)
 end
 
 apply(noctalia.state.get("status"))

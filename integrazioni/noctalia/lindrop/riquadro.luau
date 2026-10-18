@@ -1,5 +1,8 @@
 --!nonstrict
--- lindrop - control-center tile, same channels as the bar widget.
+-- lindrop - control-center tile. Click opens the management panel; right click
+-- toggles receiving. The tile highlights while receiving.
+
+local PANEL = "polpo/lindrop:gestione"
 
 local function apply(status)
     local st = if type(status) == "table" then status.state or "unknown" else "unknown"
@@ -16,9 +19,9 @@ apply(noctalia.state.get("status"))
 noctalia.state.watch("status", apply)
 
 function onClick()
-    noctalia.state.set("command", { action = "toggle", t = noctalia.nowMs() })
+    noctalia.togglePanel(PANEL)
 end
 
 function onRightClick()
-    noctalia.state.set("command", { action = "open", t = noctalia.nowMs() })
+    noctalia.state.set("command", { action = "toggle", t = noctalia.nowMs() })
 end

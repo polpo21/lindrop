@@ -284,6 +284,11 @@ fn invia(files: Vec<PathBuf>, to: Option<String>) -> Result<()> {
     // Name every receiver through /Discover, once each. Never send to the first
     // that answers blindly: anything on the link can claim to be a receiver.
     let limit = Duration::from_secs(std::env::var("LINDROP_CERCA_S").ok().and_then(|v| v.parse().ok()).unwrap_or(120));
+    // After the first receiver is named, wait a little so a second device
+    // nearby also shows up before we send or ask which. 0 = send to the only
+    // one at once (the bar's panel sets this: with one iPhone there is nobody
+    // else to choose).
+    let grace = Duration::from_secs(std::env::var("LINDROP_ATTESA_ALTRI_S").ok().and_then(|v| v.parse().ok()).unwrap_or(2));
     let wanted = to.as_deref().map(str::to_lowercase);
     let t = Instant::now();
     let mut asked = std::collections::HashSet::new();
@@ -306,12 +311,11 @@ fn invia(files: Vec<PathBuf>, to: Option<String>) -> Result<()> {
         let matches: Vec<_> =
             named.iter().filter(|(_, n)| wanted.as_ref().is_none_or(|w| n.to_lowercase().contains(w))).cloned().collect();
         if !matches.is_empty() {
-            // A couple of seconds more, so a second device nearby shows up too.
             let since = *first_match.get_or_insert_with(Instant::now);
-            if matches.len() == 1 && since.elapsed() >= Duration::from_secs(2) {
+            if matches.len() == 1 && since.elapsed() >= grace {
                 break matches[0].clone();
             }
-            if matches.len() > 1 && since.elapsed() >= Duration::from_secs(2) {
+            if matches.len() > 1 && since.elapsed() >= grace {
                 break choose(&matches)?;
             }
         }
