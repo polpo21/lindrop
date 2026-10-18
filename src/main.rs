@@ -252,7 +252,16 @@ fn invia(files: Vec<PathBuf>, to: Option<String>) -> Result<()> {
             bail!("{} non è un file", f.display());
         }
     }
-    let cfg = Config::load()?;
+    let mut cfg = Config::load()?;
+    // A phone sitting on its home screen only hears the BLE "doorbell" when the
+    // Wi-Fi is off: on this combo Wi-Fi+BT chip the coexistence starves the
+    // advert while Wi-Fi is up, so the phone wakes AWDL but never advertises
+    // itself as a receiver. Sending lasts seconds, so default to exclusive
+    // (Wi-Fi back right after). A mode pinned in the config is honoured: with
+    // "condivisa" the phone must have the AirDrop share sheet open.
+    if cfg.modalita == radio::Modo::Automatica {
+        cfg.modalita = radio::Modo::Esclusiva;
+    }
     let ident = ident::Ident::load_or_create(&config::data_dir(), &cfg.nome)?;
     let sender = send::Sender::new(&ident, &cfg.nome)?;
     let awdl = Awdl::up(&cfg)?;
@@ -265,7 +274,12 @@ fn invia(files: Vec<PathBuf>, to: Option<String>) -> Result<()> {
         }
     };
     awdl.mdns.browse(true);
-    say!("Cerco iPhone… sull'iPhone: AirDrop su «Tutti per 10 minuti» e Condividi → AirDrop aperto");
+    let hint = if awdl.link.as_ref().is_some_and(|l| l.condivisa) {
+        "e Condividi → AirDrop aperto"
+    } else {
+        "(anche dalla home, senza aprire Condividi)"
+    };
+    say!("Cerco iPhone… sull'iPhone: AirDrop su «Tutti per 10 minuti» {hint}");
 
     // Name every receiver through /Discover, once each. Never send to the first
     // that answers blindly: anything on the link can claim to be a receiver.
