@@ -1,13 +1,24 @@
 --!nonstrict
--- lindrop - control-center panel: receive toggle, send a file, open the
--- received-files folder. A pure renderer over the service's "status" (receive)
--- and "send" state; every action goes back to the service through "command".
+-- lindrop - control-center panel: receive toggle, pick who to send to, send a
+-- file, open the received-files folder. A pure renderer over the service's
+-- "status", "send" and "devices" state; actions go back through "command".
 
 local status = { state = "unknown" }
 local send = { state = "idle", info = "" }
+local devs = { list = {}, scanning = false }
+local sel = 0 -- 0 = Automatico, else index into devs.list
 
-local function cmd(action)
-    noctalia.state.set("command", { action = action, t = noctalia.nowMs() })
+local function cmd(action, extra)
+    local msg = { action = action, t = noctalia.nowMs() }
+    if extra ~= nil then
+        for k, v in pairs(extra) do msg[k] = v end
+    end
+    noctalia.state.set("command", msg)
+end
+
+local function chosenName()
+    if sel <= 0 then return "" end
+    return (devs.list or {})[sel] or ""
 end
 
 local function render()
@@ -18,7 +29,15 @@ local function render()
         elseif st == "stopping" then "Spegnimento…"
         else "Spenta"
 
-    local sending = send.state == "picking" or send.state == "sending"
+    local list = devs.list or {}
+    if sel > #list then sel = 0 end
+    local options = { "Automatico" }
+    for _, n in ipairs(list) do
+        options[#options + 1] = n
+    end
+
+    local busy = send.state == "picking" or send.state == "sending"
+    local scanning = devs.scanning == true
     local sendMsg = if send.state == "picking" then "Scegli i file da inviare…"
         elseif send.state == "sending" then (send.info ~= "" and send.info or "Invio in corso…")
         elseif send.state == "done" then (send.info or "Inviato")
@@ -35,20 +54,41 @@ local function render()
             ui.toggle({
                 checked = on,
                 enabled = st ~= "unknown",
-                onChange = function(v)
-                    cmd(if v == "true" then "start" else "stop")
-                end,
+                onChange = function(v) cmd(if v == "true" then "start" else "stop") end,
             }),
         }),
-        ui.label({ text = "Sull'iPhone: AirDrop su «Tutti per 10 minuti», anche dalla home.", fontSize = 11, color = "on_surface_variant", maxLines = 2 }),
-        ui.button({
-            text = if sending then "Invio in corso…" else "Invia file…",
-            glyph = "send",
-            variant = "primary",
-            enabled = not sending,
-            onClick = function() cmd("invia") end,
+        ui.row({ gap = 8, align = "center" }, {
+            ui.label({ text = "Manda a:", fontSize = 12 }),
+            ui.select({
+                options = options,
+                selectedIndex = sel,
+                enabled = not busy,
+                onChange = function(v) sel = tonumber(v) or 0; render() end,
+                flexGrow = 1,
+            }),
+            ui.button({
+                glyph = "refresh",
+                variant = "ghost",
+                enabled = not scanning and not busy,
+                tooltip = "Cerca i dispositivi vicini",
+                onClick = function() cmd("aggiorna") end,
+            }),
         }),
     }
+
+    if scanning then
+        table.insert(children, ui.label({ text = "Cerco dispositivi vicini…", fontSize = 11, color = "on_surface_variant" }))
+    elseif #list == 0 then
+        table.insert(children, ui.label({ text = "Premi ⟳ per cercare i dispositivi (o lascia Automatico).", fontSize = 11, color = "on_surface_variant", maxLines = 2 }))
+    end
+
+    table.insert(children, ui.button({
+        text = if busy then "Invio in corso…" else "Invia file…",
+        glyph = "send",
+        variant = "primary",
+        enabled = not busy and not scanning,
+        onClick = function() cmd("invia", { a = chosenName() }) end,
+    }))
 
     if sendMsg ~= "" then
         table.insert(children, ui.label({ text = sendMsg, fontSize = 12, color = "on_surface_variant", maxLines = 3 }))
@@ -68,19 +108,19 @@ end
 function onOpen(_context)
     status = noctalia.state.get("status") or status
     send = noctalia.state.get("send") or send
+    devs = noctalia.state.get("devices") or devs
+    sel = 0
     render()
 end
 
 noctalia.state.watch("status", function(v)
-    if type(v) == "table" then
-        status = v
-        render()
-    end
+    if type(v) == "table" then status = v; render() end
 end)
 
 noctalia.state.watch("send", function(v)
-    if type(v) == "table" then
-        send = v
-        render()
-    end
+    if type(v) == "table" then send = v; render() end
+end)
+
+noctalia.state.watch("devices", function(v)
+    if type(v) == "table" then devs = v; render() end
 end)

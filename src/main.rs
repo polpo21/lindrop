@@ -62,6 +62,9 @@ enum Cmd {
         #[arg(long)]
         ripristina: bool,
     },
+    /// Elenca i dispositivi AirDrop vicini (la usa il pannello della barra)
+    #[command(hide = true)]
+    Dispositivi,
     /// Apre la cartella dei file ricevuti (la usa la barra)
     #[command(hide = true)]
     Apri,
@@ -91,6 +94,7 @@ fn main() {
         None => stato(),
         Some(Cmd::Ricevi { minuti }) => ricevi(minuti),
         Some(Cmd::Invia { file, a }) => invia(file, a),
+        Some(Cmd::Dispositivi) => dispositivi(),
         Some(Cmd::Apri) => Config::load().and_then(|c| {
             std::process::Command::new("xdg-open").arg(&c.cartella).spawn()?;
             Ok(())
@@ -244,6 +248,59 @@ fn choose(list: &[(std::net::SocketAddr, String)]) -> Result<(std::net::SocketAd
     std::io::stdin().read_line(&mut line)?;
     let i: usize = line.trim().parse().ok().filter(|i| (1..=list.len()).contains(i)).context("scelta non valida")?;
     Ok(list[i - 1].clone())
+}
+
+/// Discover nearby AirDrop receivers and print their names as `DISPOSITIVO:<name>`
+/// (one per line), so the bar's panel can fill its "send to…" menu. Stops a few
+/// seconds after the last new one, or at LINDROP_CERCA_S (default 10 s). The
+/// setup still prints "Accendo AWDL…" etc.; the panel reads only the prefix.
+fn dispositivi() -> Result<()> {
+    let mut cfg = Config::load()?;
+    if cfg.modalita == radio::Modo::Automatica {
+        cfg.modalita = radio::Modo::Esclusiva;
+    }
+    let ident = ident::Ident::load_or_create(&config::data_dir(), &cfg.nome)?;
+    let sender = send::Sender::new(&ident, &cfg.nome)?;
+    let awdl = Awdl::up(&cfg)?;
+    let _wake = ble::Wake::start().ok();
+    awdl.mdns.browse(true);
+    say!("Cerco dispositivi… sull'iPhone: AirDrop su «Tutti per 10 minuti»");
+
+    let limit = Duration::from_secs(std::env::var("LINDROP_CERCA_S").ok().and_then(|v| v.parse().ok()).unwrap_or(10));
+    let t = Instant::now();
+    let mut asked = std::collections::HashSet::new();
+    let mut names: Vec<String> = Vec::new();
+    let mut last_found: Option<Instant> = None;
+    loop {
+        if awdl.should_stop().is_some() {
+            break;
+        }
+        for p in awdl.mdns.peers() {
+            if awdl.should_stop().is_some() {
+                break;
+            }
+            if asked.insert(p.addr)
+                && let Ok(Some(n)) = sender.discover(p.addr)
+            {
+                // Il nome arriva da un dispositivo vicino (non fidato): tolgo i
+                // caratteri di controllo, così non può iniettare righe nel
+                // protocollo a righe `DISPOSITIVO:` letto dal pannello.
+                let clean = n.replace(|c: char| c.is_control(), " ");
+                let clean = clean.trim();
+                if !clean.is_empty() && !names.iter().any(|m| m.as_str() == clean) {
+                    println!("DISPOSITIVO:{clean}");
+                    names.push(clean.to_string());
+                }
+                last_found = Some(Instant::now());
+            }
+        }
+        // Found at least one and quiet for ~3 s: that is the set.
+        if last_found.is_some_and(|f| f.elapsed() >= Duration::from_secs(3)) || t.elapsed() > limit {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    Ok(())
 }
 
 fn invia(files: Vec<PathBuf>, to: Option<String>) -> Result<()> {
